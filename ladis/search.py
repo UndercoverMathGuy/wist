@@ -33,6 +33,7 @@ class SearchPolicy:
         self.z, self.margin = z, margin
         self.n_dev = 0
         self.n_dec = 0
+        self.ess_log = []
 
     @torch.no_grad()
     def _logits(self, W):
@@ -52,7 +53,7 @@ class SearchPolicy:
         games = mask.nonzero().flatten()
         out = torch.zeros(B, dtype=torch.long, device=dev)
         # chunk games so that rollout batch stays bounded
-        per = max(1, self.max_batch // (self.M * 13))
+        per = max(1, self.max_batch // (self.N * 13))
         q = torch.full((B, NC), float("nan"), device=dev)
         for i in range(0, len(games), per):
             g = games[i:i + per]
@@ -108,9 +109,10 @@ class SearchPolicy:
                 loglik += torch.where(W.cur != me_rep, lp, torch.zeros_like(lp))
             W.step(a)
         loglik = loglik.masked_fill(failed.to(dev), -1e9)
-        wts = F.softmax((self.beta * loglik).view(G, N), 1)
-        pick = torch.multinomial(wts, M, replacement=True)  # (G,M)
-        R = select(W, (pick + torch.arange(G, device=dev).unsqueeze(1) * N).flatten())
+        # importance weights over ALL sampled worlds (no resampling -> no duplicate worlds)
+        wts = F.softmax((self.beta * loglik).view(G, N), 1)  # (G,N)
+        M = N
+        R = W
         # candidate actions = my legal cards, padded to 13 slots
         legal_g = env.legal_mask()[games]  # (G,52)
         order = torch.where(legal_g, torch.arange(NC, device=dev), NC + torch.arange(NC, device=dev)).argsort(1)[:, :13]
@@ -126,14 +128,18 @@ class SearchPolicy:
             lg, _ = self._logits(E)
             E.step(lg.argmax(1))
         R = E.tricks.gather(1, my_team.unsqueeze(1)).squeeze(1).float().view(G, M, 13)
-        sc = torch.where(slot_valid, R.mean(1), torch.full_like(R[:, 0], -1e9))
+        sc = torch.where(slot_valid, (wts.unsqueeze(2) * R).sum(1), torch.full_like(R[:, 0], -1e9))
         # default = the network's own greedy card; deviate only on a significant paired gain
         lg0, _ = self._logits(select(env, games))
         a0 = lg0.argmax(1)
         slot0 = (cand == a0.unsqueeze(1)).float().argmax(1)
         diff = R - R.gather(2, slot0.view(G, 1, 1).expand(G, M, 1))
-        mu = diff.mean(1)
-        se = diff.std(1) / (M ** 0.5)
+        w = wts.unsqueeze(2)  # (G,M,1)
+        mu = (w * diff).sum(1)
+        var = (w * (diff - mu.unsqueeze(1)) ** 2).sum(1)
+        ess = 1.0 / (wts ** 2).sum(1, keepdim=True)  # effective number of worlds
+        se = (var / ess.clamp(min=1.0)).sqrt()
+        self.ess_log.append(float(ess.mean()))
         ok = slot_valid & (mu > self.z * se + self.margin) & (mu > 0)
         score = torch.where(ok, mu, torch.full_like(mu, -1e9))
         dev_best = score.argmax(1)
