@@ -35,22 +35,37 @@ def main():
     ap.add_argument("--out", default="")
     ap.add_argument("--B", type=int, default=200)
     ap.add_argument("--seed", type=int, default=7)
+    ap.add_argument("--device", default="cpu")
+    ap.add_argument("--search", action="store_true", help="evaluate SearchPolicy instead of the raw net")
+    ap.add_argument("--N", type=int, default=128)
+    ap.add_argument("--M", type=int, default=32)
+    ap.add_argument("--beta", type=float, default=0.5)
     args = ap.parse_args()
     torch.set_num_threads(2)
-    m = load(args.ckpt)
+    m = load(args.ckpt, args.device)
     g = nn_policy(m)
     pm = PIMC(K=args.pimc_k, workers=args.workers)
     res = {"ckpt": args.ckpt, "deals": args.deals, "pimc_k": args.pimc_k}
     t = time.time()
-    res["nn_vs_rule"] = duplicate(g, rule_bot, 20000, B=4000, seed=args.seed)
-    res["pimc_vs_rule"] = duplicate(pm, rule_bot, args.deals, B=args.B, seed=args.seed)
-    res["nn_vs_pimc"] = duplicate(g, pm, args.deals, B=args.B, seed=args.seed)
-    # ad-hoc: our bot with a PIMC partner vs PIMC pair (strong-human proxy)
-    res["adhoc_nn+pimc_vs_pimc"] = duplicate((g, pm), pm, args.deals, B=args.B, seed=args.seed)
+    D = dict(B=args.B, seed=args.seed, device=args.device)
+    if args.search:
+        from .search import SearchPolicy
+        sp = SearchPolicy(m, N=args.N, M=args.M, beta=args.beta)
+        res.update(search=dict(N=args.N, M=args.M, beta=args.beta))
+        res["search_vs_rule"] = duplicate(sp, rule_bot, args.deals, **D)
+        res["nn_vs_rule_same_deals"] = duplicate(g, rule_bot, args.deals, **D)
+        res["search_vs_pimc"] = duplicate(sp, pm, args.deals, **D)
+        res["adhoc_search+pimc_vs_pimc"] = duplicate((sp, pm), pm, args.deals, **D)
+    else:
+        res["nn_vs_rule"] = duplicate(g, rule_bot, 20000, B=4000, seed=args.seed, device=args.device)
+        res["pimc_vs_rule"] = duplicate(pm, rule_bot, args.deals, **D)
+        res["nn_vs_pimc"] = duplicate(g, pm, args.deals, **D)
+        # ad-hoc: our bot with a PIMC partner vs PIMC pair (strong-human proxy)
+        res["adhoc_nn+pimc_vs_pimc"] = duplicate((g, pm), pm, args.deals, **D)
     res["secs"] = time.time() - t
     print(json.dumps(res), flush=True)
     if args.out:
-        with open(args.out, "a") as f:
+        with open(args.out, "a") as f:  # noqa
             f.write(json.dumps(res) + "\n")
 
 
