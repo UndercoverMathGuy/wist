@@ -50,9 +50,15 @@ class SearchPolicy:
         out = torch.zeros(B, dtype=torch.long, device=dev)
         # chunk games so that rollout batch stays bounded
         per = max(1, self.max_batch // (self.M * 13))
+        q = torch.full((B, NC), float("nan"), device=dev)
         for i in range(0, len(games), per):
             g = games[i:i + per]
             out[g] = self._search(env, g)
+            _, cand, sc, sv = self.last
+            qq = torch.full((len(g), NC), float("nan"), device=dev)
+            qq.scatter_(1, torch.where(sv, cand, cand[:, :1]), torch.where(sv, sc, sc[:, :1]))
+            q[g] = qq
+        self.q = q  # (B,52) expected final team tricks per legal card (nan = not evaluated)
         return out
 
     @torch.no_grad()
@@ -119,4 +125,5 @@ class SearchPolicy:
         sc = E.tricks.gather(1, my_team.unsqueeze(1)).squeeze(1).float().view(G, M, 13).mean(1)
         sc = torch.where(slot_valid, sc, torch.full_like(sc, -1e9))
         best = sc.argmax(1)
+        self.last = (games, cand, sc, slot_valid)  # exposed for expert-iteration targets
         return cand.gather(1, best.unsqueeze(1)).squeeze(1)
