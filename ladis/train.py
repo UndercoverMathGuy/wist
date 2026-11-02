@@ -21,14 +21,14 @@ import torch.nn.functional as F
 from .arena import duplicate
 from .bots import random_bot, rule_bot
 from .engine import NC, NS, NR, WhistBatch
-from .features import OBS_DIM, encode
+from .features import obs_dim, encode
 from .model import ActorCritic
 
 
 def nn_policy(model, greedy=True):
     @torch.no_grad()
     def pol(env):
-        obs = encode(env)
+        obs = encode(env, hist=model.hist)
         legal = env.legal_mask()
         with torch.autocast(env.device.type, dtype=torch.bfloat16, enabled=env.device.type == "cuda"):
             lg = model.logits(obs, legal).float()
@@ -81,7 +81,7 @@ def rollout(model, league: League, B, device, mix, gen):
     pids = torch.where(m2 & ~is_lteam, opp_adhoc.unsqueeze(1), pids)
     pids = torch.where(m2 & is_lteam & (seats != lseat.unsqueeze(1)), torch.ones_like(pids), pids)
 
-    D = OBS_DIM
+    D = obs_dim(model.hist)
     obs_buf = torch.zeros(NR, NS, B, D, dtype=torch.float16, device=device)
     oth_buf = torch.zeros(NR, NS, B, 3 * NC, dtype=torch.bool, device=device)
     leg_buf = torch.zeros(NR, NS, B, NC, dtype=torch.bool, device=device)
@@ -93,7 +93,7 @@ def rollout(model, league: League, B, device, mix, gen):
         k = t // 4
         s = env.cur
         pid_cur = pids[ar, s]
-        oobs = encode(env, oracle=True)
+        oobs = encode(env, oracle=True, hist=model.hist)
         obs = oobs[:, :D]
         legal = env.legal_mask()
         act = torch.zeros(B, dtype=torch.long, device=device)
@@ -105,7 +105,7 @@ def rollout(model, league: League, B, device, mix, gen):
                 lg = model.logits(obs[idx], legal[idx]).float()
                 v = model.value(oobs[idx]).float()
             dist = torch.distributions.Categorical(logits=lg)
-            a = dist.sample(generator=None) if False else dist.sample()
+            a = dist.sample()
             act[idx] = a
             si = s[idx]
             obs_buf[k, si, idx] = obs[idx].half()
@@ -177,6 +177,7 @@ def main():
     ap.add_argument("--eval_every", type=int, default=50)
     ap.add_argument("--eval_deals", type=int, default=8192)
     ap.add_argument("--resume", default="")
+    ap.add_argument("--hist", action="store_true")
     ap.add_argument("--seed", type=int, default=0)
     args = ap.parse_args()
 
@@ -186,7 +187,7 @@ def main():
     random.seed(args.seed)
     if dev.type == "cuda":
         torch.backends.cuda.matmul.allow_tf32 = True
-    model = ActorCritic(args.width, args.depth).to(dev)
+    model = ActorCritic(args.width, args.depth, hist=args.hist).to(dev)
     opt = torch.optim.Adam(model.parameters(), lr=args.lr, eps=1e-5)
     league = League()
     it0 = 0
@@ -218,7 +219,7 @@ def main():
         N = obs.shape[0]
         n_samples += N
         adv_n = (adv - adv.mean()) / (adv.std() + 1e-8)
-        frac = min(1.0, (it - it0 + 0) / max(1, args.ent_iters))
+        frac = min(1.0, it / max(1, args.ent_iters))
         ent_coef = args.ent + (args.ent_final - args.ent) * frac
         model.train()
         stats = dict(pl=0.0, vl=0.0, ent=0.0, kl=0.0, cf=0.0, n=0)

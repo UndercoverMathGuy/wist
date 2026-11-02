@@ -21,7 +21,7 @@ from .train import nn_policy
 def load(path, device="cpu"):
     ck = torch.load(path, map_location=device)
     a = ck.get("args", {})
-    m = ActorCritic(a.get("width", 512), a.get("depth", 4)).to(device)
+    m = ActorCritic(a.get("width", 512), a.get("depth", 4), hist=a.get("hist", False)).to(device)
     m.load_state_dict(ck["model"])
     return m.eval()
 

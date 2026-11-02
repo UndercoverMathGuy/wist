@@ -3,7 +3,7 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 
-from .features import OBS_DIM, ORACLE_EXTRA
+from .features import ORACLE_EXTRA, obs_dim
 
 
 class ResBlock(nn.Module):
@@ -30,10 +30,12 @@ class MLP(nn.Module):
 
 
 class ActorCritic(nn.Module):
-    def __init__(self, width=512, depth=4, cwidth=512, cdepth=4):
+    def __init__(self, width=512, depth=4, cwidth=512, cdepth=4, hist=False):
         super().__init__()
-        self.actor = MLP(OBS_DIM, 52, width, depth)
-        self.critic = MLP(OBS_DIM + ORACLE_EXTRA, 1, cwidth, cdepth)
+        self.hist = hist
+        D = obs_dim(hist)
+        self.actor = MLP(D, 52, width, depth)
+        self.critic = MLP(D + ORACLE_EXTRA, 1, cwidth, cdepth)
         nn.init.zeros_(self.actor.out.weight)
         nn.init.zeros_(self.actor.out.bias)
 

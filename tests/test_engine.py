@@ -47,3 +47,22 @@ def test_random_games():
             hc, hs = env.hist_card[b].tolist(), env.hist_seat[b].tolist()
             check_follow(owner[b].tolist(), hc, hs)
             assert ref_tricks(hc, hs, int(fl[b])) == tr[b].tolist()
+
+
+def test_hist_features():
+    from ladis.features import encode, OBS_DIM
+    from ladis.engine import NR, NS, NC
+    env = WhistBatch(64).reset()
+    for _ in range(23):
+        env.step(rule_bot(env))
+    o = encode(env, hist=True)[:, OBS_DIM:OBS_DIM + NR * NS * NC].view(64, NR, NS, NC)
+    p = env.cur
+    for b in range(64):
+        for t in range(NR):
+            for i in range(4):
+                c = int(env.hist_card[b, 4 * t + i])
+                if c < 0:
+                    continue
+                r = (int(env.hist_seat[b, 4 * t + i]) - int(p[b])) % 4
+                assert o[b, t, r, c] == 1
+    assert o.sum() == 64 * 23

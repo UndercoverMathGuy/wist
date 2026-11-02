@@ -11,6 +11,11 @@ from .engine import NC, NS, NR, WhistBatch
 
 OBS_DIM = 52 + 3 * 4 * 52 + 3 * 52 + 4 + 4 + 12 + 52 + 52 + 1 + 4 + 13 + 2 + 52
 ORACLE_EXTRA = 3 * 52
+HIST_DIM = NR * NS * NC + NR * NS + NR * NS
+
+
+def obs_dim(hist: bool) -> int:
+    return OBS_DIM + (HIST_DIM if hist else 0)
 
 
 def _rel_gather(x: torch.Tensor, p: torch.Tensor) -> torch.Tensor:
@@ -21,7 +26,7 @@ def _rel_gather(x: torch.Tensor, p: torch.Tensor) -> torch.Tensor:
     return x[ar, idx]
 
 
-def encode(env: WhistBatch, oracle: bool = False) -> torch.Tensor:
+def encode(env: WhistBatch, oracle: bool = False, hist: bool = False) -> torch.Tensor:
     B, dev = env.B, env.device
     p = env.cur
     ar = env.ar
@@ -57,6 +62,21 @@ def encode(env: WhistBatch, oracle: bool = False) -> torch.Tensor:
     obs = torch.cat(
         [hand, played, led, disc, tco, lso, pos, void, unseen.float(), wco, partner_win, wrelo, tno,
          us.unsqueeze(1), them.unsqueeze(1), master], 1)
+    if hist:
+        hc = env.hist_card.view(B, NR, NS)  # play order within trick
+        hs = env.hist_seat.view(B, NR, NS)
+        valid = hc >= 0
+        rel = (hs - p.view(B, 1, 1)) % NS
+        # slot (trick, rel seat) -> card one-hot
+        h = torch.zeros(B, NR, NS, NC, device=dev)
+        h.scatter_(3, torch.where(valid, hc, 0).unsqueeze(3), valid.float().unsqueeze(3))
+        # h currently indexed by play position; reorder by relative seat
+        h2 = torch.zeros(B, NR, NS, NC, device=dev)
+        h2.scatter_add_(2, rel.unsqueeze(3).expand(B, NR, NS, NC), h)
+        lead_rel = F.one_hot(rel[:, :, 0], NS).float() * valid[:, :, 0:1].float()
+        tw = env.trick_winner_hist
+        win_rel = F.one_hot(((tw - p.unsqueeze(1)) % NS), NS).float() * (tw >= 0).unsqueeze(2).float()
+        obs = torch.cat([obs, h2.reshape(B, -1), lead_rel.reshape(B, -1), win_rel.reshape(B, -1)], 1)
     if oracle:
         others = _rel_gather(env.hands, p)[:, 1:].float().reshape(B, -1)
         obs = torch.cat([obs, others], 1)
