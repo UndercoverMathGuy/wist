@@ -31,7 +31,7 @@ def play(env: WhistBatch, seat_policies: Sequence[Policy]) -> torch.Tensor:
             for s in seats:
                 m |= cur == s
             if m.any():
-                a = pol(env)
+                a = pol(env, m) if getattr(pol, "wants_mask", False) else pol(env)
                 act = torch.where(m, a, act)
         env.step(act)
     return env.tricks.clone()
