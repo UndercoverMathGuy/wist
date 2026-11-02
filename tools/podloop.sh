@@ -9,7 +9,7 @@ cd /workspace
 cd wist
 mkdir -p runs
 pip install -q endplay > pip.log 2>&1 &
-(cd runs && nohup python3 -m http.server 8000 > ../http.log 2>&1 &)
+setsid nohup python3 tools/authserve.py runs > http.log 2>&1 &
 last=""; pid=""
 while true; do
   git fetch -q origin "$BR" && git reset -q --hard "origin/$BR"
