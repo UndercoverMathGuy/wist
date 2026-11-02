@@ -25,11 +25,14 @@ from .pimc import sample_world
 class SearchPolicy:
     wants_mask = True
 
-    def __init__(self, model, N=128, M=32, beta=0.5, floor=0.1, seed=0, max_batch=32768):
+    def __init__(self, model, N=128, M=32, beta=0.5, floor=0.1, seed=0, max_batch=32768, z=2.0, margin=0.0):
         self.model = model
         self.N, self.M, self.beta, self.floor = N, M, beta, floor
         self.rng = random.Random(seed)
         self.max_batch = max_batch
+        self.z, self.margin = z, margin
+        self.n_dev = 0
+        self.n_dec = 0
 
     @torch.no_grad()
     def _logits(self, W):
@@ -122,8 +125,20 @@ class SearchPolicy:
         while not E.finished:
             lg, _ = self._logits(E)
             E.step(lg.argmax(1))
-        sc = E.tricks.gather(1, my_team.unsqueeze(1)).squeeze(1).float().view(G, M, 13).mean(1)
-        sc = torch.where(slot_valid, sc, torch.full_like(sc, -1e9))
-        best = sc.argmax(1)
+        R = E.tricks.gather(1, my_team.unsqueeze(1)).squeeze(1).float().view(G, M, 13)
+        sc = torch.where(slot_valid, R.mean(1), torch.full_like(R[:, 0], -1e9))
+        # default = the network's own greedy card; deviate only on a significant paired gain
+        lg0, _ = self._logits(select(env, games))
+        a0 = lg0.argmax(1)
+        slot0 = (cand == a0.unsqueeze(1)).float().argmax(1)
+        diff = R - R.gather(2, slot0.view(G, 1, 1).expand(G, M, 1))
+        mu = diff.mean(1)
+        se = diff.std(1) / (M ** 0.5)
+        ok = slot_valid & (mu > self.z * se + self.margin) & (mu > 0)
+        score = torch.where(ok, mu, torch.full_like(mu, -1e9))
+        dev_best = score.argmax(1)
+        any_ok = ok.any(1)
+        best = torch.where(any_ok, dev_best, slot0)
+        self.n_dev += int(any_ok.sum()); self.n_dec += G
         self.last = (games, cand, sc, slot_valid)  # exposed for expert-iteration targets
         return cand.gather(1, best.unsqueeze(1)).squeeze(1)
