@@ -128,3 +128,14 @@ class WhistBatch:
     @property
     def finished(self) -> bool:
         return self.step_no >= NC
+
+
+def select(env: WhistBatch, idx: torch.Tensor) -> WhistBatch:
+    """New batch made of games env[idx] (deep copy of per-game state)."""
+    out = WhistBatch(len(idx), env.device, gen=env.gen)
+    for k, v in env.__dict__.items():
+        if isinstance(v, torch.Tensor) and v.dim() >= 1 and v.shape[0] == env.B and k not in ("suit", "rank", "ar"):
+            setattr(out, k, v[idx].clone())
+    out.trick_no = env.trick_no
+    out.step_no = env.step_no
+    return out
