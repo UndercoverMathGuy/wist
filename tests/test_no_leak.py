@@ -1,0 +1,60 @@
+"""The acting player's inputs (and the search's decision) must not depend on hidden cards."""
+import random
+
+import torch
+
+from ladis.bots import rule_bot
+from ladis.engine import WhistBatch
+from ladis.features import encode
+from ladis.model import ActorCritic
+from ladis.search import SearchPolicy
+
+
+def _twin_games(steps, seed):
+    """Two games, identical from the acting player's seat, with different hidden hands."""
+    torch.manual_seed(seed)
+    A = WhistBatch(1).reset()
+    for _ in range(steps):
+        A.step(rule_bot(A))
+    me = int(A.cur[0])
+    owner = A.owner[0].clone()
+    played = A.played_by[0].any(0)
+    hidden = [c for c in range(52) if not played[c] and owner[c] != me]
+    rng = random.Random(seed)
+    swaps = 0
+    for _ in range(200):  # swap same-suit hidden cards between two other players
+        c, d = rng.sample(hidden, 2)
+        if c // 13 == d // 13 and owner[c] != owner[d]:
+            owner[c], owner[d] = owner[d].clone(), owner[c].clone()
+            swaps += 1
+    B = WhistBatch(1).reset(leader=A.first_leader, deal=owner.unsqueeze(0))
+    for t in range(steps):
+        B.step(A.hist_card[:, t])
+    assert int(B.cur[0]) == me
+    hidden_differs = not torch.equal(A.hands[0], B.hands[0])
+    return A, B, hidden_differs
+
+
+def test_actor_inputs_ignore_hidden_cards():
+    differs = 0
+    for seed in range(40):
+        A, B, d = _twin_games(steps=random.Random(seed).randrange(0, 48), seed=seed)
+        differs += d
+        for hist in (False, True):
+            assert torch.equal(encode(A, hist=hist), encode(B, hist=hist)), "actor input leaks hidden cards"
+        # sanity: the oracle (critic-only) input DOES see them, so the test has teeth
+        if d:
+            assert not torch.equal(encode(A, oracle=True), encode(B, oracle=True))
+    assert differs > 20
+
+
+def test_search_ignores_hidden_cards():
+    model = ActorCritic(64, 1).eval()
+    for seed in range(6):
+        A, B, d = _twin_games(steps=9 + 4 * seed, seed=100 + seed)
+        assert d
+        s1, s2 = SearchPolicy(model, N=24, seed=7), SearchPolicy(model, N=24, seed=7)
+        a1, a2 = s1(A), s2(B)
+        assert torch.equal(a1, a2), "search decision depends on hidden cards"
+        # every card's estimated value must match too, not just the final pick
+        assert torch.equal(s1.q.nan_to_num(-1), s2.q.nan_to_num(-1)), "search values depend on hidden cards"
