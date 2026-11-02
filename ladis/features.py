@@ -81,3 +81,32 @@ def encode(env: WhistBatch, oracle: bool = False, hist: bool = False) -> torch.T
         others = _rel_gather(env.hands, p)[:, 1:].float().reshape(B, -1)
         obs = torch.cat([obs, others], 1)
     return obs
+
+
+PAD_CARD = NC  # 52
+PAD_SEAT = NS  # 4
+
+
+def encode_tokens(env: WhistBatch) -> dict:
+    """Token view for the transformer, from the acting player's seat (public + own info only).
+
+    hand  (B,13) my cards (sorted), PAD_CARD where empty
+    hcard (B,52) cards in play order so far, PAD_CARD for not-yet-played
+    hrel  (B,52) relative seat that played each card (0 me,1 LHO,2 partner,3 RHO), PAD_SEAT if none
+    win   (B,13) relative seat that won each finished trick, PAD_SEAT if unfinished
+    """
+    B, dev = env.B, env.device
+    p = env.cur
+    hand = env.hands[env.ar, p]
+    ar52 = torch.arange(NC, device=dev)
+    order = torch.where(hand, ar52, NC + ar52).argsort(1)[:, :NR]
+    nh = hand.sum(1, keepdim=True)
+    hand_ids = torch.where(torch.arange(NR, device=dev).unsqueeze(0) < nh, order, PAD_CARD)
+    hc = env.hist_card
+    valid = hc >= 0
+    hcard = torch.where(valid, hc, PAD_CARD)
+    hrel = torch.where(valid, (env.hist_seat - p.unsqueeze(1)) % NS, PAD_SEAT)
+    tw = env.trick_winner_hist
+    win = torch.where(tw >= 0, (tw - p.unsqueeze(1)) % NS, PAD_SEAT)
+    return dict(hand=hand_ids.to(torch.int8), hcard=hcard.to(torch.int8), hrel=hrel.to(torch.int8),
+                win=win.to(torch.int8))

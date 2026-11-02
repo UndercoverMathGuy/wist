@@ -5,7 +5,7 @@ import torch
 
 from ladis.bots import rule_bot
 from ladis.engine import WhistBatch
-from ladis.features import encode
+from ladis.features import encode, encode_tokens
 from ladis.model import ActorCritic
 from ladis.search import SearchPolicy
 
@@ -42,6 +42,9 @@ def test_actor_inputs_ignore_hidden_cards():
         differs += d
         for hist in (False, True):
             assert torch.equal(encode(A, hist=hist), encode(B, hist=hist)), "actor input leaks hidden cards"
+        ta, tb = encode_tokens(A), encode_tokens(B)
+        for k in ta:
+            assert torch.equal(ta[k], tb[k]), f"transformer token '{k}' leaks hidden cards"
         # sanity: the oracle (critic-only) input DOES see them, so the test has teeth
         if d:
             assert not torch.equal(encode(A, oracle=True), encode(B, oracle=True))
@@ -49,12 +52,13 @@ def test_actor_inputs_ignore_hidden_cards():
 
 
 def test_search_ignores_hidden_cards():
-    model = ActorCritic(64, 1).eval()
-    for seed in range(6):
-        A, B, d = _twin_games(steps=9 + 4 * seed, seed=100 + seed)
-        assert d
-        s1, s2 = SearchPolicy(model, N=24, seed=7), SearchPolicy(model, N=24, seed=7)
-        a1, a2 = s1(A), s2(B)
-        assert torch.equal(a1, a2), "search decision depends on hidden cards"
-        # every card's estimated value must match too, not just the final pick
-        assert torch.equal(s1.q.nan_to_num(-1), s2.q.nan_to_num(-1)), "search values depend on hidden cards"
+    models = (ActorCritic(64, 1).eval(), ActorCritic(arch="tf", d=32, layers=1, heads=2).eval())
+    for model in models:
+        for seed in range(6):
+            A, B, d = _twin_games(steps=9 + 4 * seed, seed=100 + seed)
+            assert d
+            s1, s2 = SearchPolicy(model, N=24, seed=7), SearchPolicy(model, N=24, seed=7)
+            a1, a2 = s1(A), s2(B)
+            assert torch.equal(a1, a2), "search decision depends on hidden cards"
+            # every card's estimated value must match too, not just the final pick
+            assert torch.equal(s1.q.nan_to_num(-1), s2.q.nan_to_num(-1)), "search values depend on hidden cards"

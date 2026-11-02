@@ -18,7 +18,6 @@ import torch.nn.functional as F
 
 from .engine import WhistBatch
 from .eval import load
-from .features import encode
 from .search import SearchPolicy
 
 
@@ -35,13 +34,13 @@ def generate(model, games, out_dir, N, M, beta, device, shard_games=64, seed=0):
         env = WhistBatch(shard_games, device, gen=g).reset()
         O, L, Q, A = [], [], [], []
         while not env.finished:
-            obs = encode(env, hist=model.hist)
+            obs = model.observe(env)
             legal = env.legal_mask()
             a = sp(env)
-            O.append(obs.half().cpu()); L.append(legal.cpu()); Q.append(sp.q.half().cpu()); A.append(a.cpu())
+            O.append({k: v.cpu() for k, v in obs.items()}); L.append(legal.cpu()); Q.append(sp.q.half().cpu()); A.append(a.cpu())
             env.step(a)
         print(json.dumps({"deviations": sp.n_dev, "decisions": sp.n_dec}), flush=True)
-        torch.save({"obs": torch.cat(O), "legal": torch.cat(L), "q": torch.cat(Q), "act": torch.cat(A)},
+        torch.save({"obs": {k: torch.cat([o[k] for o in O]) for k in O[0]}, "legal": torch.cat(L), "q": torch.cat(Q), "act": torch.cat(A)},
                    os.path.join(out_dir, f"shard_{seed}_{k:05d}.pt"))
         k += 1
         done += shard_games
@@ -53,25 +52,26 @@ def distill(ckpt, data_dir, out, device, tau=0.25, epochs=2, lr=1e-4, mb=8192, t
     model = load(ckpt, device).train()
     shards = sorted(glob.glob(os.path.join(data_dir, "shard_*.pt")))
     data = [torch.load(s) for s in shards]
-    obs = torch.cat([d["obs"] for d in data]).to(device)
+    obs = {k: torch.cat([d["obs"][k] for d in data]).to(device) for k in data[0]["obs"]}
     legal = torch.cat([d["legal"] for d in data]).to(device)
     q = torch.cat([d["q"] for d in data]).float().to(device)
     act = torch.cat([d["act"] for d in data]).to(device)
     keep = legal.sum(1) > 1  # forced moves teach nothing
-    obs, legal, q, act = obs[keep], legal[keep], q[keep], act[keep]
+    obs = {k: v[keep] for k, v in obs.items()}
+    legal, q, act = legal[keep], q[keep], act[keep]
     q = torch.where(legal & ~q.isnan(), q, torch.full_like(q, -1e4))
     if target_kind == "action":  # imitate the (significance-gated) card the search played
         target = F.one_hot(act, 52).float()
     else:  # soft target from the search's card values
         target = F.softmax(q / tau, 1)
     opt = torch.optim.Adam(model.actor.parameters(), lr=lr)
-    n = len(obs)
+    n = len(act)
     for ep in range(epochs):
         perm = torch.randperm(n, device=device)
         tot, agree = 0.0, 0.0
         for i in range(0, n, mb):
             j = perm[i:i + mb]
-            lg = model.logits(obs[j].float(), legal[j])
+            lg = model.logits({k: v[j] for k, v in obs.items()}, legal[j])
             lp = F.log_softmax(lg, 1)
             loss = -(target[j] * torch.where(legal[j], lp, torch.zeros_like(lp))).sum(1).mean()
             opt.zero_grad(); loss.backward(); opt.step()

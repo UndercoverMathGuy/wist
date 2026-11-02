@@ -21,14 +21,13 @@ import torch.nn.functional as F
 from .arena import duplicate
 from .bots import random_bot, rule_bot
 from .engine import NC, NS, NR, WhistBatch
-from .features import obs_dim, encode
-from .model import ActorCritic
+from .model import ActorCritic, obs_index
 
 
 def nn_policy(model, greedy=True):
     @torch.no_grad()
     def pol(env):
-        obs = encode(env, hist=model.hist)
+        obs = model.observe(env)
         legal = env.legal_mask()
         with torch.autocast(env.device.type, dtype=torch.bfloat16, enabled=env.device.type == "cuda"):
             lg = model.logits(obs, legal).float()
@@ -81,9 +80,7 @@ def rollout(model, league: League, B, device, mix, gen):
     pids = torch.where(m2 & ~is_lteam, opp_adhoc.unsqueeze(1), pids)
     pids = torch.where(m2 & is_lteam & (seats != lseat.unsqueeze(1)), torch.ones_like(pids), pids)
 
-    D = obs_dim(model.hist)
-    obs_buf = torch.zeros(NR, NS, B, D, dtype=torch.float16, device=device)
-    oth_buf = torch.zeros(NR, NS, B, 3 * NC, dtype=torch.bool, device=device)
+    obs_buf = None  # dict of (13,4,B,...) buffers, allocated on first observation
     leg_buf = torch.zeros(NR, NS, B, NC, dtype=torch.bool, device=device)
     act_buf = torch.zeros(NR, NS, B, dtype=torch.long, device=device)
     logp_buf = torch.zeros(NR, NS, B, device=device)
@@ -93,8 +90,9 @@ def rollout(model, league: League, B, device, mix, gen):
         k = t // 4
         s = env.cur
         pid_cur = pids[ar, s]
-        oobs = encode(env, oracle=True, hist=model.hist)
-        obs = oobs[:, :D]
+        obs = model.observe(env, oracle=True)
+        if obs_buf is None:
+            obs_buf = {k: torch.zeros((NR, NS) + v.shape, dtype=v.dtype, device=device) for k, v in obs.items()}
         legal = env.legal_mask()
         act = torch.zeros(B, dtype=torch.long, device=device)
         # learner
@@ -102,14 +100,15 @@ def rollout(model, league: League, B, device, mix, gen):
         if m0.any():
             idx = m0.nonzero().squeeze(1)
             with torch.autocast(device.type, dtype=torch.bfloat16, enabled=device.type == "cuda"):
-                lg = model.logits(obs[idx], legal[idx]).float()
-                v = model.value(oobs[idx]).float()
+                oi = obs_index(obs, idx)
+                lg = model.logits(oi, legal[idx]).float()
+                v = model.value(oi).float()
             dist = torch.distributions.Categorical(logits=lg)
             a = dist.sample()
             act[idx] = a
             si = s[idx]
-            obs_buf[k, si, idx] = obs[idx].half()
-            oth_buf[k, si, idx] = oobs[idx, D:].bool()
+            for kk, vv in oi.items():
+                obs_buf[kk][k, si, idx] = vv
             leg_buf[k, si, idx] = legal[idx]
             act_buf[k, si, idx] = a
             logp_buf[k, si, idx] = dist.log_prob(a)
@@ -122,7 +121,7 @@ def rollout(model, league: League, B, device, mix, gen):
             if mi.any():
                 idx = mi.nonzero().squeeze(1)
                 with torch.autocast(device.type, dtype=torch.bfloat16, enabled=device.type == "cuda"):
-                    lg = snap.logits(obs[idx], legal[idx]).float()
+                    lg = snap.logits(obs_index(obs, idx), legal[idx]).float()
                 act[idx] = torch.distributions.Categorical(logits=lg).sample()
         env.step(act)
     # rewards: trick k outcome for seat s's team
@@ -138,7 +137,7 @@ def rollout(model, league: League, B, device, mix, gen):
         mm = mode == mval
         if mm.any():
             stats[f"{name}_tricks"] = lt[mm].mean().item()
-    return dict(obs=obs_buf, oth=oth_buf, leg=leg_buf, act=act_buf, logp=logp_buf, val=val_buf,
+    return dict(obs=obs_buf, leg=leg_buf, act=act_buf, logp=logp_buf, val=val_buf,
                 rew=rew, mask=lmask), stats
 
 
@@ -178,6 +177,10 @@ def main():
     ap.add_argument("--eval_deals", type=int, default=8192)
     ap.add_argument("--resume", default="")
     ap.add_argument("--hist", action="store_true")
+    ap.add_argument("--arch", default="mlp", choices=["mlp", "tf"])
+    ap.add_argument("--d", type=int, default=256)
+    ap.add_argument("--layers", type=int, default=6)
+    ap.add_argument("--heads", type=int, default=8)
     ap.add_argument("--seed", type=int, default=0)
     args = ap.parse_args()
 
@@ -187,7 +190,8 @@ def main():
     random.seed(args.seed)
     if dev.type == "cuda":
         torch.backends.cuda.matmul.allow_tf32 = True
-    model = ActorCritic(args.width, args.depth, hist=args.hist).to(dev)
+    model = ActorCritic(args.width, args.depth, hist=args.hist, arch=args.arch, d=args.d,
+                        layers=args.layers, heads=args.heads).to(dev)
     opt = torch.optim.Adam(model.parameters(), lr=args.lr, eps=1e-5)
     league = League()
     it0 = 0
@@ -208,15 +212,14 @@ def main():
         buf, st = rollout(model, league, args.B, dev, mix, gen)
         adv, ret = gae(buf["val"], buf["rew"], args.lam)
         m = buf["mask"]
-        obs = buf["obs"][m]
-        oth = buf["oth"][m]
+        obs = {k: v[m] for k, v in buf["obs"].items()}
         leg = buf["leg"][m]
         act = buf["act"][m]
         old_logp = buf["logp"][m]
         adv = adv[m]
         ret = ret[m]
         del buf
-        N = obs.shape[0]
+        N = act.shape[0]
         n_samples += N
         adv_n = (adv - adv.mean()) / (adv.std() + 1e-8)
         frac = min(1.0, it / max(1, args.ent_iters))
@@ -227,11 +230,10 @@ def main():
             perm = torch.randperm(N, device=dev)
             for i in range(0, N, args.mb):
                 j = perm[i:i + args.mb]
-                o = obs[j].float()
-                oo = torch.cat([o, oth[j].float()], 1)
+                o = obs_index(obs, j)
                 with torch.autocast(dev.type, dtype=torch.bfloat16, enabled=dev.type == "cuda"):
                     lg = model.logits(o, leg[j]).float()
-                    v = model.value(oo).float()
+                    v = model.value(o).float()
                 logp_all = F.log_softmax(lg, 1)
                 lp = logp_all.gather(1, act[j].unsqueeze(1)).squeeze(1)
                 p_all = logp_all.exp()

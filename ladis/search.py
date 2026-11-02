@@ -18,7 +18,6 @@ import torch
 import torch.nn.functional as F
 
 from .engine import NC, NS, WhistBatch, select
-from .features import encode
 from .pimc import sample_world
 
 
@@ -37,7 +36,7 @@ class SearchPolicy:
 
     @torch.no_grad()
     def _logits(self, W):
-        obs = encode(W, hist=self.model.hist)
+        obs = self.model.observe(W)
         legal = W.legal_mask()
         dev = W.device
         with torch.autocast(dev.type, dtype=torch.bfloat16, enabled=dev.type == "cuda"):
