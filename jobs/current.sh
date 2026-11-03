@@ -1,21 +1,22 @@
-# job: FINAL (relaunch after the 13:56 sampler-fallback crash). Belief-weighted search eval of the final tf1 checkpoint,
-#      with the whole GPU, results written per matchup as they finish (money runs out ~16:50 UTC).
+# job: after the final eval, resume belief training from the final checkpoint until the balance runs out.
 pkill -f "ladis\." ; for p in $(pgrep -f "bash jobs/current.sh"); do [ "$p" != "$$" ] && kill "$p" 2>/dev/null; done
 for i in $(seq 1 30); do pgrep -f "ladis\.train" >/dev/null || break; sleep 5; done
 pkill -9 -f "ladis\." ; sleep 2
 pgrep -f "tools/authserve.py" >/dev/null || { setsid nohup python3 tools/authserve.py runs > http.log 2>&1 < /dev/null & }
 R=runs/tf1
-rm -f runs/FINAL_EVAL_DONE
-for f in runs/final_eval.jsonl.partial runs/final_eval_uniform.jsonl.partial runs/final_eval.out runs/final_eval_uniform.out; do
-  [ -f $f ] && mv $f $f.crashed_1355
-done
-[ -f $R/ckpt_final.pt ] || cp $R/latest.pt $R/ckpt_final.pt
-echo "=== FINAL: training stopped $(date -Is) for the belief-search eval" >> $R/train.out
-date -Is > runs/FINAL_EVAL_STARTED
-# 1) belief-weighted search: vs the plain network (GPU only), then vs PIMC, one-seat vs PIMC, network vs PIMC
-python3 -m ladis.eval --ckpt $R/ckpt_final.pt --device cuda --search --prior belief --beta 0 --N 32 \
-  --nn_deals 300 --deals 150 --B 50 --pimc_k 16 --workers 14 --out runs/final_eval.jsonl > runs/final_eval.out 2>&1
-# 2) if money remains: uniform-prior search vs the network on the same deals (does belief beat PIMC-style sampling?)
-python3 -m ladis.eval --ckpt $R/ckpt_final.pt --device cuda --search --prior uniform --beta 0 --N 32 \
-  --nn_deals 300 --deals 0 --B 50 --pimc_k 16 --workers 14 --out runs/final_eval_uniform.jsonl > runs/final_eval_uniform.out 2>&1
-date -Is > runs/FINAL_EVAL_DONE
+REFS="runs/v1/ckpt_paused.pt $(ls $R/ckpt_anchor_it*.pt | head -1)"
+RES="--resume $R/ckpt_final.pt"; [ $R/latest.pt -nt $R/ckpt_final.pt ] && RES="--resume $R/latest.pt"
+echo "=== restart $(date -Is): post-eval, resume belief training ($RES) until balance runs out" >> $R/train.out
+python3 -m ladis.train --run $R --arch tf --d 256 --layers 6 --heads 8 --B 16384 --mb 16384 --micro 4096 \
+  --lr 2.2e-5 --lr_end 1e-5 --hours 3 --eval_every 25 --snap_every 100 --latest_every 10 --target_kl 0.03 \
+  --len_sort 1 --compile 1 --belief_coef 0.2 --belief_lr 1e-3 $RES >> $R/train.out 2>&1 &
+TP=$!
+( while kill -0 $TP 2>/dev/null; do
+    if python3 -m ladis.bench --ckpt $R/latest.pt --snapshot --deals 4096 --B 2048 --refs $REFS --out $R/bench.jsonl >> $R/bench.out 2>&1; then
+      sleep 450
+    else
+      sleep 60
+    fi
+  done ) &
+wait $TP
+date -Is > runs/IDLE
