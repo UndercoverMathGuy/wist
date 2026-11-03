@@ -239,6 +239,7 @@ def main():
     ap.add_argument("--iters", type=int, default=100000)
     ap.add_argument("--hours", type=float, default=1e9)
     ap.add_argument("--lr", type=float, default=3e-4)
+    ap.add_argument("--lr_end", type=float, default=-1.0, help="linear decay to this by --hours (default: constant)")
     ap.add_argument("--epochs", type=int, default=3)
     ap.add_argument("--mb", type=int, default=16384)
     ap.add_argument("--micro", type=int, default=0, help="micro-batch for grad accumulation (0 = mb)")
@@ -315,6 +316,10 @@ def main():
     stop = {"flag": False}
     signal.signal(signal.SIGTERM, lambda *_: stop.update(flag=True))
     for it in range(it0, args.iters):
+        frac_t = min(1.0, (time.time() - t_start) / 3600 / max(1e-6, args.hours))
+        lr_now = args.lr if args.lr_end < 0 else args.lr + (args.lr_end - args.lr) * frac_t
+        for g in opt.param_groups:  # also overrides the lr stored in a resumed optimizer state
+            g["lr"] = lr_now
         if stop["flag"]:
             save_latest(it)
             print(json.dumps({"stopped": "SIGTERM", "saved_iter": it}), flush=True)
@@ -395,6 +400,7 @@ def main():
             rec.update(x_buf=len(replay), x_total=replay.total)
         if (it + 1) % args.latest_every == 0:
             save_latest(it + 1)
+        rec["lr"] = lr_now
         rec.update(it=it, N=N, sps=N / (time.time() - t0), dt=time.time() - t0,
                    samples=n_samples, hours=(time.time() - t_start) / 3600, ent_coef=ent_coef, **st)
         if (it + 1) % args.snap_every == 0:

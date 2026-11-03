@@ -1,4 +1,4 @@
-# job: tf1 pure PPO, fast path (len_sort + compile), sample-weighted stats/KL check;
+# job: tf1 pure PPO, fast path (len_sort + compile), LR 5e-5 -> 2e-5 linear decay, rollout batch 16384;
 #      bench vs v1 every ~7.5 min; PIMC eval 10 min after start then every ~40 min
 pkill -f "ladis\." ; for p in $(pgrep -f "bash jobs/current.sh"); do [ "$p" != "$$" ] && kill "$p" 2>/dev/null; done
 for i in $(seq 1 30); do pgrep -f "ladis\.train" >/dev/null || break; sleep 5; done   # let the trainer save & exit
@@ -9,8 +9,8 @@ R=runs/tf1
 END=$(date -u -d "today 12:45" +%s); NOW=$(date -u +%s); HOURS=$(python3 -c "print(max(0.2, ($END-$NOW)/3600))")
 REFS="runs/v1/ckpt_paused.pt"
 RES="--resume $R/ckpt.pt"; [ $R/latest.pt -nt $R/ckpt.pt ] && RES="--resume $R/latest.pt"
-echo "=== restart $(date -Is): weighted stats fix ($RES) hours $HOURS" >> $R/train.out
-python3 -m ladis.train --run $R --arch tf --d 256 --layers 6 --heads 8 --B 8192 --mb 16384 --micro 4096 --lr 2e-4 \
+echo "=== restart $(date -Is): plateau fix: lr 5e-5->2e-5, B 16384 ($RES) hours $HOURS" >> $R/train.out
+python3 -m ladis.train --run $R --arch tf --d 256 --layers 6 --heads 8 --B 16384 --mb 16384 --micro 4096 --lr 5e-5 --lr_end 2e-5 \
   --eval_every 25 --snap_every 100 --latest_every 10 --target_kl 0.03 --len_sort 1 --compile 1 \
   --hours $HOURS $RES >> $R/train.out 2>&1 &
 TP=$!
