@@ -38,7 +38,6 @@
     <div class="stat"><div class="k">Latest iteration</div><div class="v" id="s-iter">–</div></div>
     <div class="stat"><div class="k">vs v1 · pair</div><div class="v" id="s-pair">–</div></div>
     <div class="stat"><div class="k">vs v1 · one seat</div><div class="v" id="s-adhoc">–</div></div>
-    <div class="stat"><div class="k">Points</div><div class="v" id="s-n">–</div></div>
     <div class="stat"><div class="k">Belief accuracy</div><div class="v" id="s-bel">–</div><div class="k" id="s-bel-sub"></div></div>
     <div class="stat"><div class="k">Next point in</div><div class="v" id="s-eta">–</div><div class="k" id="s-eta-sub"></div></div>
   </div>
@@ -165,7 +164,6 @@ async function refresh() {
     document.getElementById("s-iter").textContent = last ? last.x : "–";
     document.getElementById("s-pair").textContent = last ? fmt(last.y) : "–";
     document.getElementById("s-adhoc").textContent = lasta ? fmt(lasta.y) : "–";
-    document.getElementById("s-n").textContent = p1.length;
     const ts = rows.filter(r => r[V1] && r.time).map(r => Date.parse(r.time) / 1000).sort((a, b) => a - b);
     if (ts.length) {
       lastPointT = ts[ts.length - 1];
