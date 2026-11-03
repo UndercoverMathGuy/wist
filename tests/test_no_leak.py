@@ -57,8 +57,11 @@ def test_search_ignores_hidden_cards():
         for seed in range(6):
             A, B, d = _twin_games(steps=9 + 4 * seed, seed=100 + seed)
             assert d
-            s1, s2 = SearchPolicy(model, N=24, seed=7), SearchPolicy(model, N=24, seed=7)
-            a1, a2 = s1(A), s2(B)
-            assert torch.equal(a1, a2), "search decision depends on hidden cards"
-            # every card's estimated value must match too, not just the final pick
-            assert torch.equal(s1.q.nan_to_num(-1), s2.q.nan_to_num(-1)), "search values depend on hidden cards"
+            priors = ("uniform", "belief") if model.arch == "tf" else ("uniform",)
+            for prior in priors:
+                s1 = SearchPolicy(model, N=24, seed=7, prior=prior)
+                s2 = SearchPolicy(model, N=24, seed=7, prior=prior)
+                a1, a2 = s1(A), s2(B)
+                assert torch.equal(a1, a2), f"search ({prior}) decision depends on hidden cards"
+                # every card's estimated value must match too, not just the final pick
+                assert torch.equal(s1.q.nan_to_num(-1), s2.q.nan_to_num(-1)), f"search ({prior}) values leak"

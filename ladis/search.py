@@ -12,6 +12,7 @@ For the player to act:
 """
 from __future__ import annotations
 
+import math
 import random
 
 import torch
@@ -21,11 +22,46 @@ from .engine import NC, NS, WhistBatch, select
 from .pimc import sample_world
 
 
+def sample_world_weighted(rng, me, my_hand, unseen, counts, void, prob, tries=200):
+    """Like pimc.sample_world, but each unseen card goes to a seat with probability proportional to
+    the belief head's P(seat holds card) x remaining capacity (respecting voids and hand sizes).
+    Returns (hands, logw): logw = log target - log proposal, where the target is the product of the
+    belief marginals restricted to consistent layouts. prob[s][c] for absolute seats s != me."""
+    others = [s for s in range(4) if s != me]
+    for _ in range(tries):
+        cards = list(unseen)
+        rng.shuffle(cards)
+        # order: cards with a single feasible seat first, then the cards the belief is most sure about,
+        # so the proposal follows the beliefs instead of fighting them (keeps importance weights flat)
+        def key(c):
+            feas = [s for s in others if not void[s][c // 13]]
+            return (len(feas) > 1, -max(prob[s][c] for s in feas) if feas else 0.0)
+        cards.sort(key=key)
+        cap = {s: counts[s] for s in others}
+        hands = {s: [] for s in others}
+        logw, ok = 0.0, True
+        for c in cards:
+            cand = [s for s in others if cap[s] > 0 and not void[s][c // 13]]
+            if not cand:
+                ok = False
+                break
+            q = [max(prob[s][c], 1e-6) * cap[s] for s in cand]
+            z = sum(q)
+            s = rng.choices(cand, weights=q)[0]
+            logw += math.log(max(prob[s][c], 1e-6)) - math.log(q[cand.index(s)] / z)
+            hands[s].append(c)
+            cap[s] -= 1
+        if ok:
+            hands[me] = list(my_hand)
+            return [hands[s] for s in range(4)], logw
+    return None, 0.0
+
+
 class SearchPolicy:
     wants_mask = True
 
     def __init__(self, model, N=128, M=32, beta=0.5, floor=0.1, seed=0, max_batch=32768, z=2.0, margin=0.0,
-                 mode="rollout"):
+                 mode="rollout", prior="uniform"):
         self.model = model
         self.N, self.M, self.beta, self.floor = N, M, beta, floor
         self.rng = random.Random(seed)
@@ -35,6 +71,9 @@ class SearchPolicy:
         self.n_dec = 0
         self.ess_log = []
         self.mode = mode  # "rollout": play every world out with the policy; "critic": 1-step + value net
+        # "uniform": hidden cards dealt uniformly at random (PIMC-style, constraints only);
+        # "belief": dealt from the network's belief head (who holds which card), importance-weighted
+        self.prior = prior
 
     @torch.no_grad()
     def _logits(self, W):
@@ -77,6 +116,18 @@ class SearchPolicy:
         played_any = env.played_by[games].any(1).cpu()
         owners = torch.empty(G * N, NC, dtype=torch.long)
         failed = torch.zeros(G * N, dtype=torch.bool)
+        logw = torch.zeros(G * N)
+        bel_abs = None
+        if self.prior == "belief":  # belief marginals for the player to act, mapped to absolute seats
+            Es = select(env, games)
+            ob = self.model.observe(Es)
+            with torch.autocast(dev.type, dtype=torch.bfloat16, enabled=dev.type == "cuda"):
+                _, bel = self.model.logits(ob, Es.legal_mask(), return_belief=True)
+            p_rel = F.softmax(bel.float().view(G, 3, NC), 1).cpu()  # rel seats 1..3 = LHO, partner, RHO
+            bel_abs = torch.zeros(G, NS, NC)
+            for r in range(3):
+                bel_abs[torch.arange(G), (cur + r + 1) % NS] = p_rel[:, r]
+            bel_abs = bel_abs.tolist()
         for gi in range(G):
             me = int(cur[gi])
             my_hand = hands[gi, me].nonzero().flatten().tolist()
@@ -85,7 +136,11 @@ class SearchPolicy:
             vd = void[gi].tolist()
             base = owner_real[gi].clone()  # played cards keep their true owner; my cards are mine
             for n in range(N):
-                w = sample_world(self.rng, me, my_hand, unseen, counts, vd)
+                if bel_abs is not None:
+                    w, lw = sample_world_weighted(self.rng, me, my_hand, unseen, counts, vd, bel_abs[gi])
+                    logw[gi * N + n] = lw
+                else:
+                    w = sample_world(self.rng, me, my_hand, unseen, counts, vd)
                 o = base.clone()
                 if w is None:  # never fall back to the true layout
                     failed[gi * N + n] = True
@@ -109,9 +164,10 @@ class SearchPolicy:
                 lp = torch.log(p.gather(1, a.unsqueeze(1)).squeeze(1) + 1e-12)
                 loglik += torch.where(W.cur != me_rep, lp, torch.zeros_like(lp))
             W.step(a)
-        loglik = loglik.masked_fill(failed.to(dev), -1e9)
-        # importance weights over ALL sampled worlds (no resampling -> no duplicate worlds)
-        wts = F.softmax((self.beta * loglik).view(G, N), 1)  # (G,N)
+        # importance weights over ALL sampled worlds (no resampling -> no duplicate worlds);
+        # failed samples are masked AFTER scaling so they get zero weight even when beta == 0
+        score_w = (self.beta * loglik + logw.to(dev)).masked_fill(failed.to(dev), -1e9)
+        wts = F.softmax(score_w.view(G, N), 1)  # (G,N)
         M = N
         R = W
         # candidate actions = my legal cards, padded to 13 slots

@@ -43,6 +43,9 @@ def main():
     ap.add_argument("--N", type=int, default=128)
     ap.add_argument("--M", type=int, default=32)
     ap.add_argument("--beta", type=float, default=0.5)
+    ap.add_argument("--prior", default="uniform", choices=["uniform", "belief"])
+    ap.add_argument("--mode", default="rollout", choices=["rollout", "critic"])
+    ap.add_argument("--nn_deals", type=int, default=0, help="deals for search-vs-network (default: --deals)")
     args = ap.parse_args()
     torch.set_num_threads(2)
     m = load(args.ckpt, args.device)
@@ -53,12 +56,22 @@ def main():
     D = dict(B=args.B, seed=args.seed, device=args.device)
     if args.search:
         from .search import SearchPolicy
-        sp = SearchPolicy(m, N=args.N, M=args.M, beta=args.beta)
-        res.update(search=dict(N=args.N, M=args.M, beta=args.beta))
-        res["search_vs_rule"] = duplicate(sp, rule_bot, args.deals, **D)
-        res["nn_vs_rule_same_deals"] = duplicate(g, rule_bot, args.deals, **D)
-        res["search_vs_pimc"] = duplicate(sp, pm, args.deals, **D)
-        res["adhoc_search+pimc_vs_pimc"] = duplicate((sp, pm), pm, args.deals, **D)
+        sp = SearchPolicy(m, N=args.N, M=args.M, beta=args.beta, prior=args.prior, mode=args.mode)
+        res.update(search=dict(N=args.N, beta=args.beta, prior=args.prior, mode=args.mode))
+
+        def stage(key, fn):  # write each matchup as soon as it finishes (partial results survive)
+            t0 = time.time()
+            res[key] = fn()
+            res[key + "_secs"] = round(time.time() - t0)
+            print(json.dumps({key: res[key], "secs": res[key + "_secs"]}), flush=True)
+            if args.out:
+                with open(args.out + ".partial", "a") as f:
+                    f.write(json.dumps({"stage": key, "result": res[key], "secs": res[key + "_secs"],
+                                        "search": res["search"], "ckpt": args.ckpt}) + "\n")
+        stage("search_vs_nn", lambda: duplicate(sp, g, args.nn_deals or args.deals, **D))
+        stage("search_vs_pimc", lambda: duplicate(sp, pm, args.deals, **D))
+        stage("adhoc_search+pimc_vs_pimc", lambda: duplicate((sp, pm), pm, args.deals, **D))
+        stage("nn_vs_pimc_same_deals", lambda: duplicate(g, pm, args.deals, **D))
     else:
         res["nn_vs_rule"] = duplicate(g, rule_bot, 20000, B=args.nn_B, seed=args.seed, device=args.device)
         res["pimc_vs_rule"] = duplicate(pm, rule_bot, args.deals, **D)
