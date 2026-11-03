@@ -375,15 +375,15 @@ def main():
                         xl = F.cross_entropy(xlg, xa)
                         loss = loss + args.exit_coef * xl
                         with torch.no_grad():
-                            stats["xl"] += xl.item(); stats["xa"] += (xlg.argmax(1) == xa).float().mean().item()
+                            stats["xl"] += w * xl.item(); stats["xa"] += w * (xlg.argmax(1) == xa).float().mean().item()
                     (loss * w).backward()
-                    with torch.no_grad():
-                        stats["pl"] += pl.item(); stats["vl"] += vl.item(); stats["ent"] += ent.item()
+                    with torch.no_grad():  # sample-weighted (chunks differ in size under len_sort)
+                        stats["pl"] += w * pl.item(); stats["vl"] += w * vl.item(); stats["ent"] += w * ent.item()
                         kl_c = (old_logp[j] - lp).mean().item()
-                        stats["kl"] += kl_c
-                        kl_mb += kl_c; n_mb += 1
-                        stats["cf"] += ((ratio - 1).abs() > args.clip).float().mean().item()
-                        stats["n"] += 1
+                        stats["kl"] += w * kl_c
+                        kl_mb += w * kl_c; n_mb += w
+                        stats["cf"] += w * ((ratio - 1).abs() > args.clip).float().mean().item()
+                stats["n"] += 1
                 torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
                 opt.step()
                 if args.target_kl > 0 and kl_mb / max(1, n_mb) > args.target_kl:
