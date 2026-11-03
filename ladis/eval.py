@@ -38,6 +38,7 @@ def main():
     ap.add_argument("--B", type=int, default=200)
     ap.add_argument("--seed", type=int, default=7)
     ap.add_argument("--device", default="cpu")
+    ap.add_argument("--nn_B", type=int, default=4000, help="GPU batch for the cheap nn-vs-rule eval")
     ap.add_argument("--search", action="store_true", help="evaluate SearchPolicy instead of the raw net")
     ap.add_argument("--N", type=int, default=128)
     ap.add_argument("--M", type=int, default=32)
@@ -59,7 +60,7 @@ def main():
         res["search_vs_pimc"] = duplicate(sp, pm, args.deals, **D)
         res["adhoc_search+pimc_vs_pimc"] = duplicate((sp, pm), pm, args.deals, **D)
     else:
-        res["nn_vs_rule"] = duplicate(g, rule_bot, 20000, B=4000, seed=args.seed, device=args.device)
+        res["nn_vs_rule"] = duplicate(g, rule_bot, 20000, B=args.nn_B, seed=args.seed, device=args.device)
         res["pimc_vs_rule"] = duplicate(pm, rule_bot, args.deals, **D)
         res["nn_vs_pimc"] = duplicate(g, pm, args.deals, **D)
         # ad-hoc: our bot with a PIMC partner vs PIMC pair (strong-human proxy)
