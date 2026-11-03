@@ -13,7 +13,7 @@ import torch
 
 from .arena import duplicate
 from .bots import rule_bot, random_bot
-from .model import ActorCritic
+from .model import ActorCritic, load_state_compat
 from .pimc import PIMC
 from .train import nn_policy
 
@@ -24,7 +24,7 @@ def load(path, device="cpu"):
     m = ActorCritic(a.get("width", 512), a.get("depth", 4), hist=a.get("hist", False),
                     arch=a.get("arch", "mlp"), d=a.get("d", 256), layers=a.get("layers", 6),
                     heads=a.get("heads", 8)).to(device)
-    m.load_state_dict(ck["model"])
+    load_state_compat(m, ck["model"])
     return m.eval()
 
 

@@ -21,7 +21,7 @@ import torch.nn.functional as F
 from .arena import duplicate
 from .bots import rule_bot
 from .engine import NC, NS, NR, WhistBatch
-from .model import ActorCritic, obs_index
+from .model import ActorCritic, belief_loss, load_state_compat, obs_index
 
 
 def nn_policy(model, greedy=True):
@@ -86,7 +86,7 @@ class League:
             return
         for f in sorted(glob.glob(os.path.join(self.save_dir, "snap_*.pt")))[-self.max_snaps:]:
             m = copy.deepcopy(template)
-            m.load_state_dict(torch.load(f, map_location=next(template.parameters()).device))
+            load_state_compat(m, torch.load(f, map_location=next(template.parameters()).device))
             self.add(m, save=False)
 
     def add(self, model, save=True, tag=None):
@@ -265,6 +265,7 @@ def main():
     ap.add_argument("--compile", type=int, default=0, help="torch.compile the transformer core")
     ap.add_argument("--cudagraph", type=int, default=0, help="CUDA-graph the inference (rollout) path")
     ap.add_argument("--critic_from", default="", help="replace the critic with this checkpoint's critic")
+    ap.add_argument("--belief_coef", type=float, default=0.0, help="weight of the auxiliary belief loss (tf only)")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--exit_dir", default="", help="dir where search workers drop shards")
     ap.add_argument("--exit_coef", type=float, default=1.0)
@@ -289,14 +290,25 @@ def main():
         model.actor.enable_cudagraphs()
     import logging  # silence harmless symbolic-shape warnings from the compiler
     logging.getLogger("torch.utils._sympy.interp").setLevel(logging.ERROR)
-    opt = torch.optim.Adam(model.parameters(), lr=args.lr, eps=1e-5, fused=dev.type == "cuda")
+    # belief-head params in their own optimizer group, so optimizer states saved before the head existed still load
+    base_p = [p for n, p in model.named_parameters() if ".belief." not in n]
+    bel_p = [p for n, p in model.named_parameters() if ".belief." in n]
+    fused = dev.type == "cuda"
+    opt = torch.optim.Adam([{"params": base_p}] + ([{"params": bel_p}] if bel_p else []), lr=args.lr, eps=1e-5,
+                           fused=fused)
     league = League(save_dir=os.path.join(args.run, "snaps"))
     it0 = 0
     if args.resume:
         ck = torch.load(args.resume, map_location=dev)
-        model.load_state_dict(ck["model"])
+        load_state_compat(model, ck["model"])
         if "opt" in ck:
-            opt.load_state_dict(ck["opt"])
+            try:
+                opt.load_state_dict(ck["opt"])
+            except ValueError:  # saved before the belief group existed: load base group, then add belief
+                opt = torch.optim.Adam([{"params": base_p}], lr=args.lr, eps=1e-5, fused=fused)
+                opt.load_state_dict(ck["opt"])
+                if bel_p:
+                    opt.add_param_group({"params": bel_p})
         it0 = ck["iter"]
     if args.critic_from:  # swap in another model's critic (same input features), reset its optimizer state
         src = torch.load(args.critic_from, map_location=dev)["model"]
@@ -349,7 +361,8 @@ def main():
         frac = min(1.0, it / max(1, args.ent_iters))
         ent_coef = args.ent + (args.ent_final - args.ent) * frac
         model.train()
-        stats = dict(pl=0.0, vl=0.0, ent=0.0, kl=0.0, cf=0.0, xl=0.0, xa=0.0, n=0)
+        stats = dict(pl=0.0, vl=0.0, ent=0.0, kl=0.0, cf=0.0, xl=0.0, xa=0.0, bl=0.0, bacc=0.0, bbase=0.0, n=0)
+        use_b = args.belief_coef > 0 and args.arch == "tf"
         if replay is not None:
             replay.poll()
         use_x = replay is not None and len(replay) >= args.exit_min and it >= args.exit_start
@@ -369,7 +382,11 @@ def main():
                     w = len(j) / len(jb)
                     o = obs_index(obs, j)
                     with torch.autocast(dev.type, dtype=torch.bfloat16, enabled=dev.type == "cuda"):
-                        lg = model.logits(o, leg[j]).float()
+                        if use_b:
+                            lg, bel = model.logits(o, leg[j], return_belief=True)
+                            lg = lg.float()
+                        else:
+                            lg = model.logits(o, leg[j]).float()
                         v = model.value(o).float()
                     logp_all = F.log_softmax(lg, 1)
                     lp = logp_all.gather(1, act[j].unsqueeze(1)).squeeze(1)
@@ -380,6 +397,10 @@ def main():
                     pl = -torch.min(ratio * a, ratio.clamp(1 - args.clip, 1 + args.clip) * a).mean()
                     vl = F.smooth_l1_loss(v, ret[j])
                     loss = pl + args.vcoef * vl - ent_coef * ent
+                    if use_b:  # auxiliary: who holds each unseen card (labels = true deal, never an input)
+                        bl, bacc, bbase = belief_loss(bel, o["oth"])
+                        loss = loss + args.belief_coef * bl
+                        stats["bl"] += w * bl.item(); stats["bacc"] += w * bacc.item(); stats["bbase"] += w * bbase.item()
                     if use_x:  # imitate the search's chosen card (expert iteration)
                         xo, xa, xleg = replay.sample(max(1024, len(j) // 2))
                         with torch.autocast(dev.type, dtype=torch.bfloat16, enabled=dev.type == "cuda"):

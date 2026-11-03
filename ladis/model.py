@@ -66,6 +66,9 @@ class TransformerActor(nn.Module):
         self.enc = nn.TransformerEncoder(layer, layers, enable_nested_tensor=False)
         self.ln = nn.LayerNorm(d)
         self.head = nn.Sequential(nn.Linear(2 * d, d), nn.GELU(), nn.Linear(d, 1))
+        # belief head: for each card, which other seat holds it (LHO / partner / RHO), from the CLS token.
+        # Trained (optionally) as an auxiliary loss; labels come from the true deal in self-play.
+        self.belief = nn.Linear(d, 3 * NC)
         nn.init.zeros_(self.head[-1].weight)
         nn.init.zeros_(self.head[-1].bias)
         self.register_buffer("trick_idx", torch.arange(NC) // NS, persistent=False)
@@ -85,10 +88,10 @@ class TransformerActor(nn.Module):
     #  * hand-written pre-LN blocks on the nn.TransformerEncoder weights: one fused QKV matmul,
     #    F.scaled_dot_product_attention (fused kernel) with a boolean mask, no MHA wrapper;
     #  * the core is torch.compile-able (`compile_core`), fusing norms/GELU/residuals/embeddings.
-    def forward(self, obs):
+    def forward(self, obs, return_belief=False):
         hand = obs["hand"]
         hcard = obs["hcard"]
-        if (getattr(self, "_core_graph", None) is not None and not torch.is_grad_enabled()
+        if (not return_belief and getattr(self, "_core_graph", None) is not None and not torch.is_grad_enabled()
                 and hand.is_cuda and 0 < hand.shape[0] <= self.GRAPH_MAX_B):
             return self._forward_graphed(obs)
         with torch.no_grad():
@@ -97,11 +100,13 @@ class TransformerActor(nn.Module):
         H = max(nh, 1)
         L = min(NC, max(NS, -(-nl // NS) * NS))  # whole tricks, at least one
         core = self._core_compiled if getattr(self, "_core_compiled", None) is not None else self._core
-        score = core(hand[:, :H].long(), hcard[:, :L].long(), obs["hrel"][:, :L].long(), obs["win"].long(),
-                     obs["flat"])
+        score, bel = core(hand[:, :H].long(), hcard[:, :L].long(), obs["hrel"][:, :L].long(), obs["win"].long(),
+                          obs["flat"])
         B = hand.shape[0]
         logits = torch.full((B, NC + 1), -1e9, device=score.device, dtype=score.dtype)
         logits.scatter_(1, hand[:, :H].long(), score)
+        if return_belief:
+            return logits[:, :NC], bel
         return logits[:, :NC]
 
     # ---------------------------------------------------------------- CUDA-graph inference path
@@ -133,7 +138,7 @@ class TransformerActor(nn.Module):
         args = (h, pad(hcard.long(), PAD_CARD, L), pad(obs["hrel"].long(), NS, L), pad(obs["win"].long(), NS),
                 pad(obs["flat"], 0))
         torch.compiler.cudagraph_mark_step_begin()
-        score = self._core_graph(*args)[:B].clone()  # clone: graph outputs are reused on next replay
+        score = self._core_graph(*args)[0][:B].clone()  # clone: graph outputs are reused on next replay
         logits = torch.full((B, NC + 1), -1e9, device=score.device, dtype=score.dtype)
         logits.scatter_(1, hand.long(), score)
         return logits[:, :NC]
@@ -166,7 +171,8 @@ class TransformerActor(nn.Module):
             x = x + layer.linear2(F.gelu(layer.linear1(y)))
         x = self.ln(x)
         hm = x[:, 1:1 + H]
-        return self.head(torch.cat([hm, x[:, :1].expand(-1, H, -1)], -1)).squeeze(-1)  # (B,H)
+        score = self.head(torch.cat([hm, x[:, :1].expand(-1, H, -1)], -1)).squeeze(-1)  # (B,H)
+        return score, self.belief(x[:, 0])  # (B,H), (B,3*52)
 
     @staticmethod
     def _attn(layer, x, attn_mask):
@@ -232,7 +238,10 @@ class ActorCritic(nn.Module):
             o.update(encode_tokens(env))
         return o
 
-    def logits(self, obs, legal):
+    def logits(self, obs, legal, return_belief=False):
+        if self.arch == "tf" and return_belief:
+            lg, bel = self.actor(obs, return_belief=True)
+            return lg.masked_fill(~legal, -1e9), bel
         if self.arch == "tf":
             lg = self.actor(obs)
         else:
@@ -242,6 +251,34 @@ class ActorCritic(nn.Module):
     def value(self, obs):
         x = torch.cat([obs["flat"].float(), obs["oth"].float()], 1)
         return self.critic(x).squeeze(-1)
+
+
+def belief_loss(bel_logits, oth):
+    """Cross-entropy over {LHO, partner, RHO} for every card held by another player.
+    oth: (B, 3*52) bool, the other three hands by relative seat (training-time labels only).
+    Returns (loss, accuracy, baseline accuracy of guessing the seat with the most cards left)."""
+    B = oth.shape[0]
+    lab = oth.view(B, 3, NC)
+    mask = lab.any(1)  # (B,52) cards held by someone else
+    target = lab.float().argmax(1)  # (B,52)
+    logits = bel_logits.float().view(B, 3, NC)
+    ce = F.cross_entropy(logits, target, reduction="none")  # (B,52)
+    n = mask.sum().clamp(min=1)
+    loss = (ce * mask).sum() / n
+    with torch.no_grad():
+        acc = ((logits.argmax(1) == target) & mask).sum() / n
+        most = lab.sum(2).argmax(1, keepdim=True).expand(B, NC)  # seat holding most cards
+        base = ((most == target) & mask).sum() / n
+    return loss, acc, base
+
+
+def load_state_compat(model, sd):
+    """Load a state dict, tolerating only a missing belief head (checkpoints from before it existed)."""
+    missing, unexpected = model.load_state_dict(sd, strict=False)
+    bad = [k for k in missing if ".belief." not in k] + list(unexpected)
+    if bad:
+        raise RuntimeError(f"state dict mismatch: {bad[:6]}")
+    return model
 
 
 def obs_index(obs: dict, idx) -> dict:

@@ -72,3 +72,31 @@ def test_graph_padding_path_matches_reference():
             M.torch.compiler.cudagraph_mark_step_begin = old
             m.actor._core_graph = None
     assert torch.allclose(ref, got, atol=1e-4, rtol=1e-4), (ref - got).abs().max()
+
+
+def test_belief_loss_and_compat_loading():
+    from ladis.model import belief_loss, load_state_compat
+    torch.manual_seed(3)
+    B = 4
+    oth = torch.zeros(B, 3 * 52, dtype=torch.bool)
+    for b in range(B):  # deal 39 cards to the 3 other seats
+        perm = torch.randperm(52)[:39]
+        for i, c in enumerate(perm.tolist()):
+            oth[b, (i % 3) * 52 + c] = True
+    lab = oth.view(B, 3, 52).float()
+    perfect = (lab * 20 - 10).view(B, -1)
+    loss, acc, base = belief_loss(perfect, oth)
+    assert acc.item() == 1.0 and loss.item() < 1e-3
+    loss_u, acc_u, _ = belief_loss(torch.zeros(B, 156), oth)
+    assert abs(loss_u.item() - torch.log(torch.tensor(3.0)).item()) < 1e-5
+    # a checkpoint without the belief head still loads (only belief keys may be missing)
+    m = ActorCritic(arch="tf", d=32, layers=1, heads=2)
+    sd = {k: v for k, v in m.state_dict().items() if ".belief." not in k}
+    load_state_compat(ActorCritic(arch="tf", d=32, layers=1, heads=2), sd)
+    bad = dict(sd)
+    bad.pop(next(k for k in bad if k.startswith("critic.")))
+    try:
+        load_state_compat(ActorCritic(arch="tf", d=32, layers=1, heads=2), bad)
+        assert False, "should refuse a missing non-belief key"
+    except RuntimeError:
+        pass
