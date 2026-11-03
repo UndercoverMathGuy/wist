@@ -15,14 +15,15 @@ t1=calendar.timegm(time.strptime(time.strftime('%Y-%m-%d',time.gmtime())+' 12:45
 f=min(1,max(0,(time.time()-t0)/(t1-t0))); print('%.3e'%(5e-5+(2e-5-5e-5)*f))")
 REFS="runs/v1/ckpt_paused.pt"
 RES="--resume $R/ckpt.pt"; [ $R/latest.pt -nt $R/ckpt.pt ] && RES="--resume $R/latest.pt"
-echo "=== restart $(date -Is): bench retry fix; lr $LR0->2e-5 (schedule continued), B 16384 ($RES) hours $HOURS" >> $R/train.out
+echo "=== restart $(date -Is): bench back on B 2048 (same deals as all earlier points); lr $LR0->2e-5 (schedule continued), B 16384 ($RES) hours $HOURS" >> $R/train.out
 python3 -m ladis.train --run $R --arch tf --d 256 --layers 6 --heads 8 --B 16384 --mb 16384 --micro 4096 --lr $LR0 --lr_end 2e-5 \
   --eval_every 25 --snap_every 100 --latest_every 10 --target_kl 0.03 --len_sort 1 --compile 1 \
   --hours $HOURS $RES >> $R/train.out 2>&1 &
 TP=$!
 ( while kill -0 $TP 2>/dev/null; do
-    # smaller GPU batch so it fits next to training + PIMC eval; on failure retry after 60 s, not 7.5 min
-    if python3 -m ladis.bench --ckpt $R/latest.pt --snapshot --deals 4096 --B 1024 --refs $REFS --out $R/bench.jsonl >> $R/bench.out 2>&1; then
+    # B must stay 2048: deals are drawn per batch, so B defines the deal set (comparability across points).
+    # On failure (e.g. OOM next to training + PIMC eval) retry after 60 s, not 7.5 min
+    if python3 -m ladis.bench --ckpt $R/latest.pt --snapshot --deals 4096 --B 2048 --refs $REFS --out $R/bench.jsonl >> $R/bench.out 2>&1; then
       sleep 450
     else
       sleep 60

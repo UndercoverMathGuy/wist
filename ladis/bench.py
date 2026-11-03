@@ -41,7 +41,8 @@ def main():
     ap.add_argument("--ckpt", required=True)
     ap.add_argument("--refs", nargs="+", required=True)
     ap.add_argument("--deals", type=int, default=16384)
-    ap.add_argument("--B", type=int, default=2048)
+    ap.add_argument("--B", type=int, default=2048,
+                    help="keep fixed: deals are drawn per batch, so B defines the deal set")
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     ap.add_argument("--out", default="")
     ap.add_argument("--snapshot", action="store_true", help="copy ckpt first (it may be rewritten mid-bench)")
