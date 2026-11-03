@@ -1,0 +1,4 @@
+{"stage": "search_vs_nn", "result": [0.15333333611488342, 0.03077350534033866], "secs": 1141, "search": {"N": 32, "beta": 0.0, "prior": "belief", "mode": "rollout"}, "ckpt": "runs/tf1/ckpt_final.pt"}
+{"stage": "search_vs_pimc", "result": [0.04333333298563957, 0.05004174349576763], "secs": 630, "search": {"N": 32, "beta": 0.0, "prior": "belief", "mode": "rollout"}, "ckpt": "runs/tf1/ckpt_final.pt"}
+{"stage": "adhoc_search+pimc_vs_pimc", "result": [0.07999999821186066, 0.04984988849304648], "secs": 389, "search": {"N": 32, "beta": 0.0, "prior": "belief", "mode": "rollout"}, "ckpt": "runs/tf1/ckpt_final.pt"}
+{"stage": "nn_vs_pimc_same_deals", "result": [-0.05666666850447655, 0.04835935976445817], "secs": 68, "search": {"N": 32, "beta": 0.0, "prior": "belief", "mode": "rollout"}, "ckpt": "runs/tf1/ckpt_final.pt"}

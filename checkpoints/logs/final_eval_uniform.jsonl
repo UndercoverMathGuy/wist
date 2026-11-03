@@ -1,0 +1,1 @@
+{"stage": "search_vs_nn", "result": [0.17000000178813934, 0.03225628912692736], "secs": 1130, "search": {"N": 32, "beta": 0.0, "prior": "uniform", "mode": "rollout"}, "ckpt": "runs/tf1/ckpt_final.pt"}

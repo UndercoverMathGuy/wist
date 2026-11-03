@@ -24,3 +24,17 @@ Resume training: `python -m ladis.train --run runs/x --arch tf --resume checkpoi
 
 `logs/` has the training log (`log.jsonl`), the vs-v1 / anchor benchmark history (`bench.jsonl`),
 PIMC evals (`pimc_eval.jsonl`), the critic comparison (`critic_test.json`) and the GPU speed tests.
+
+## Final evaluation (tf1 it571 + search, 2026-11-03)
+
+Duplicate deals, tricks/game for the first-named side (± 1 s.e.). Search = 32 sampled hidden-card layouts per
+decision, each candidate card rolled out with the network in all four seats, gated (play the network's card unless
+another is > 2 s.e. better). Logs: `logs/final_eval_belief.jsonl`, `logs/final_eval_uniform.jsonl`.
+
+| Matchup | Deals | Result |
+|---|---|---|
+| belief-weighted search vs plain network | 300 | **+0.153 ± 0.031** |
+| uniform-sampling search vs plain network (same deals) | 300 | +0.170 ± 0.032 |
+| belief-weighted search vs PIMC (pair) | 150 | **+0.043 ± 0.050** |
+| belief-weighted search + PIMC partner vs PIMC pair (one seat) | 150 | **+0.080 ± 0.050** |
+| plain network vs PIMC (same deals) | 150 | −0.057 ± 0.048 |
