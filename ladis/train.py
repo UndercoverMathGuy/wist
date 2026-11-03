@@ -264,6 +264,7 @@ def main():
     ap.add_argument("--len_sort", type=int, default=1, help="length-sorted token-budget micro-batches")
     ap.add_argument("--compile", type=int, default=0, help="torch.compile the transformer core")
     ap.add_argument("--cudagraph", type=int, default=0, help="CUDA-graph the inference (rollout) path")
+    ap.add_argument("--critic_from", default="", help="replace the critic with this checkpoint's critic")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--exit_dir", default="", help="dir where search workers drop shards")
     ap.add_argument("--exit_coef", type=float, default=1.0)
@@ -297,6 +298,12 @@ def main():
         if "opt" in ck:
             opt.load_state_dict(ck["opt"])
         it0 = ck["iter"]
+    if args.critic_from:  # swap in another model's critic (same input features), reset its optimizer state
+        src = torch.load(args.critic_from, map_location=dev)["model"]
+        model.critic.load_state_dict({k[len("critic."):]: v for k, v in src.items() if k.startswith("critic.")})
+        for prm in model.critic.parameters():
+            opt.state.pop(prm, None)
+        print(json.dumps({"critic_from": args.critic_from}), flush=True)
     league.load_saved(model)
     if not league.snaps:
         league.add(model, tag=it0)
