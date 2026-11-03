@@ -19,9 +19,10 @@ from __future__ import annotations
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from .engine import NC, NR, NS
-from .features import ORACLE_EXTRA, PAD_CARD, PAD_SEAT, encode, encode_tokens, obs_dim
+from .features import ORACLE_EXTRA, PAD_CARD, encode, encode_tokens, obs_dim
 
 
 class ResBlock(nn.Module):
@@ -76,13 +77,77 @@ class TransformerActor(nn.Module):
         r = torch.where(pad, NR, c % NR)
         return self.card(c) + self.suit(s) + self.rank(r)
 
+    # ------------------------------------------------------------------ fast path
+    # Same parameters/semantics as `forward_reference`, but:
+    #  * exact length truncation: pad tokens are dropped (they are masked out of attention, so
+    #    outputs at real positions are unchanged). History is cut to the longest real history in
+    #    the batch (rounded up to a whole trick), hand to the largest hand in the batch;
+    #  * hand-written pre-LN blocks on the nn.TransformerEncoder weights: one fused QKV matmul,
+    #    F.scaled_dot_product_attention (fused kernel) with a boolean mask, no MHA wrapper;
+    #  * the core is torch.compile-able (`compile_core`), fusing norms/GELU/residuals/embeddings.
     def forward(self, obs):
+        hand = obs["hand"]
+        hcard = obs["hcard"]
+        with torch.no_grad():
+            nh = int((hand != PAD_CARD).sum(1).max().item()) if hand.numel() else 0
+            nl = int((hcard != PAD_CARD).sum(1).max().item()) if hcard.numel() else 0
+        H = max(nh, 1)
+        L = min(NC, max(NS, -(-nl // NS) * NS))  # whole tricks, at least one
+        core = self._core_compiled if getattr(self, "_core_compiled", None) is not None else self._core
+        score = core(hand[:, :H].long(), hcard[:, :L].long(), obs["hrel"][:, :L].long(), obs["win"].long(),
+                     obs["flat"])
+        B = hand.shape[0]
+        logits = torch.full((B, NC + 1), -1e9, device=score.device, dtype=score.dtype)
+        logits.scatter_(1, hand[:, :H].long(), score)
+        return logits[:, :NC]
+
+    def compile_core(self, **kw):
+        self._core_compiled = torch.compile(self._core, dynamic=True, **kw)
+        return self
+
+    def _core(self, hand, hcard, hrel, win, flat):
+        B, H = hand.shape
+        L = hcard.shape[1]
+        T = L // NS
+        hpad = hcard == PAD_CARD
+        lead = hcard.view(B, T, NS)[:, :, 0]
+        lead_suit = torch.where(lead == PAD_CARD, -1, lead // NR).repeat_interleave(NS, 1)
+        suit = torch.where(hpad, -1, hcard // NR)
+        off = (suit != lead_suit) & ~hpad
+        flag = torch.where(off & (suit == 0), 2, off.long())
+        won = win[:, :T].repeat_interleave(NS, 1)
+        h = (self._card_emb(hcard) + self.seat(hrel) + self.trick(self.trick_idx[:L]).unsqueeze(0)
+             + self.pos(self.pos_idx[:L]).unsqueeze(0) + self.won(won) + self.flag(flag) + self.kind.weight[2])
+        m = self._card_emb(hand) + self.kind.weight[1]
+        c = (self.cls(flat.to(self.cls.weight.dtype)) + self.kind.weight[0]).unsqueeze(1)
+        x = torch.cat([c, m, h], 1)
+        keep = torch.cat([torch.ones(B, 1, dtype=torch.bool, device=hand.device), hand != PAD_CARD, ~hpad], 1)
+        attn_mask = keep[:, None, None, :]  # True = may attend
+        for layer in self.enc.layers:
+            x = x + self._attn(layer, layer.norm1(x), attn_mask)
+            y = layer.norm2(x)
+            x = x + layer.linear2(F.gelu(layer.linear1(y)))
+        x = self.ln(x)
+        hm = x[:, 1:1 + H]
+        return self.head(torch.cat([hm, x[:, :1].expand(-1, H, -1)], -1)).squeeze(-1)  # (B,H)
+
+    @staticmethod
+    def _attn(layer, x, attn_mask):
+        mha = layer.self_attn
+        B, S, D = x.shape
+        nh = mha.num_heads
+        qkv = F.linear(x, mha.in_proj_weight, mha.in_proj_bias).view(B, S, 3, nh, D // nh)
+        q, k, v = qkv.permute(2, 0, 3, 1, 4).unbind(0)  # each (B, nh, S, dh)
+        o = F.scaled_dot_product_attention(q, k, v, attn_mask=attn_mask)
+        return mha.out_proj(o.transpose(1, 2).reshape(B, S, D))
+
+    # ------------------------------------------------------------------ reference (original) path
+    def forward_reference(self, obs):
         hand = obs["hand"].long()
         hcard = obs["hcard"].long()
         hrel = obs["hrel"].long()
         win = obs["win"].long()
         B = hand.shape[0]
-        # history tokens
         hpad = hcard == PAD_CARD
         lead = hcard.view(B, NR, NS)[:, :, 0]
         lead_suit = torch.where(lead == PAD_CARD, -1, lead // NR).repeat_interleave(NS, 1)
@@ -92,7 +157,6 @@ class TransformerActor(nn.Module):
         won = win.repeat_interleave(NS, 1)
         h = (self._card_emb(hcard) + self.seat(hrel) + self.trick(self.trick_idx).unsqueeze(0)
              + self.pos(self.pos_idx).unsqueeze(0) + self.won(won) + self.flag(flag) + self.kind.weight[2])
-        # my hand tokens
         m = self._card_emb(hand) + self.kind.weight[1]
         c = (self.cls(obs["flat"].to(self.cls.weight.dtype)) + self.kind.weight[0]).unsqueeze(1)
         x = torch.cat([c, m, h], 1)

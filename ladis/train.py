@@ -19,7 +19,7 @@ import torch
 import torch.nn.functional as F
 
 from .arena import duplicate
-from .bots import random_bot, rule_bot
+from .bots import rule_bot
 from .engine import NC, NS, NR, WhistBatch
 from .model import ActorCritic, obs_index
 
@@ -94,6 +94,8 @@ class League:
             os.makedirs(self.save_dir, exist_ok=True)
             torch.save(model.state_dict(), os.path.join(self.save_dir, f"snap_{tag:07d}.pt"))
         m = copy.deepcopy(model).eval()
+        if getattr(getattr(m, "actor", None), "_core_compiled", None) is not None:
+            m.actor._core_compiled = None  # deepcopy keeps the *learner's* compiled fn: drop it
         for p in m.parameters():
             p.requires_grad_(False)
         self.snaps.append(m)
@@ -135,7 +137,6 @@ def rollout(model, league: League, B, device, mix, gen):
     act_buf = torch.zeros(NR, NS, B, dtype=torch.long, device=device)
     logp_buf = torch.zeros(NR, NS, B, device=device)
     val_buf = torch.zeros(NR, NS, B, device=device)
-    rule_cache = None
     for t in range(NC):
         k = t // 4
         s = env.cur
@@ -191,6 +192,32 @@ def rollout(model, league: League, B, device, mix, gen):
                 rew=rew, mask=lmask), stats
 
 
+def micro_chunks(jb, obs, micro, len_sort):
+    """Split minibatch indices into micro-batches. With len_sort (transformer), sort by history
+    length and cut chunks to a fixed *token* budget, so each chunk is truncated to its own longest
+    history (exactly the same gradient as unsorted; just no compute spent on padding)."""
+    if not len_sort or "hcard" not in obs:
+        return [jb[c:c + micro] for c in range(0, len(jb), micro)]
+    from .features import PAD_CARD
+    lens = (obs["hcard"][jb] != PAD_CARD).sum(1)
+    order = lens.argsort()
+    jb, lens = jb[order], lens[order].cpu().numpy()
+    padded = 14 + ((lens + 3) // 4) * 4  # CLS + 13 hand + history rounded to whole tricks
+    budget = micro * (14 + NC)
+    out, st, n = [], 0, len(jb)
+    while st < n:
+        lo, hi = st + 1, n  # largest e with (e-st)*padded[e-1] <= budget
+        while lo < hi:
+            mid = (lo + hi + 1) // 2
+            if (mid - st) * padded[mid - 1] <= budget:
+                lo = mid
+            else:
+                hi = mid - 1
+        out.append(jb[st:lo])
+        st = lo
+    return out
+
+
 def gae(val, rew, lam, gamma=1.0):
     NRk = val.shape[0]
     adv = torch.zeros_like(val)
@@ -232,6 +259,8 @@ def main():
     ap.add_argument("--d", type=int, default=256)
     ap.add_argument("--layers", type=int, default=6)
     ap.add_argument("--heads", type=int, default=8)
+    ap.add_argument("--len_sort", type=int, default=1, help="length-sorted token-budget micro-batches")
+    ap.add_argument("--compile", type=int, default=0, help="torch.compile the transformer core")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--exit_dir", default="", help="dir where search workers drop shards")
     ap.add_argument("--exit_coef", type=float, default=1.0)
@@ -250,7 +279,9 @@ def main():
         torch.backends.cuda.matmul.allow_tf32 = True
     model = ActorCritic(args.width, args.depth, hist=args.hist, arch=args.arch, d=args.d,
                         layers=args.layers, heads=args.heads).to(dev)
-    opt = torch.optim.Adam(model.parameters(), lr=args.lr, eps=1e-5)
+    if args.compile and args.arch == "tf":
+        model.actor.compile_core()
+    opt = torch.optim.Adam(model.parameters(), lr=args.lr, eps=1e-5, fused=dev.type == "cuda")
     league = League(save_dir=os.path.join(args.run, "snaps"))
     it0 = 0
     if args.resume:
@@ -274,7 +305,14 @@ def main():
     logf = open(os.path.join(args.run, "log.jsonl"), "a")
     t_start = time.time()
     n_samples = 0
+    import signal
+    stop = {"flag": False}
+    signal.signal(signal.SIGTERM, lambda *_: stop.update(flag=True))
     for it in range(it0, args.iters):
+        if stop["flag"]:
+            save_latest(it)
+            print(json.dumps({"stopped": "SIGTERM", "saved_iter": it}), flush=True)
+            break
         t0 = time.time()
         model.eval()
         buf, st = rollout(model, league, args.B, dev, mix, gen)
@@ -309,8 +347,7 @@ def main():
                 jb = perm[i:i + args.mb]
                 opt.zero_grad(set_to_none=True)
                 micro = args.micro or args.mb
-                for c in range(0, len(jb), micro):  # gradient accumulation (memory)
-                    j = jb[c:c + micro]
+                for j in micro_chunks(jb, obs, micro, args.len_sort):  # gradient accumulation (memory)
                     w = len(j) / len(jb)
                     o = obs_index(obs, j)
                     with torch.autocast(dev.type, dtype=torch.bfloat16, enabled=dev.type == "cuda"):
