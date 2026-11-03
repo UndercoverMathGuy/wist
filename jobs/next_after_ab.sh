@@ -15,7 +15,7 @@ try:
         if r["ckpt"].endswith("abB/latest.pt") and "abA/latest.pt" in r:
             m, se = r["abA/latest.pt"]["pair"]
             if m > 2 * se:
-                win, coef = "B", 0.2
+                win, coef = "B", 0.2  # with its own belief-head lr (see BLR below)
 except Exception:
     pass
 print(win, coef)
@@ -28,7 +28,7 @@ REFS="runs/v1/ckpt_paused.pt $(ls $R/ckpt_anchor_it*.pt | head -1)"
 echo "=== restart $(date -Is): continue from A/B winner arm $WIN (belief_coef $BCOEF) $RES, until balance runs out" >> $R/train.out
 python3 -m ladis.train --run $R --arch tf --d 256 --layers 6 --heads 8 --B 16384 --mb 16384 --micro 4096 \
   --lr 3e-5 --lr_end 1e-5 --hours 4 --eval_every 25 --snap_every 100 --latest_every 10 --target_kl 0.03 \
-  --len_sort 1 --compile 1 --belief_coef $BCOEF $RES >> $R/train.out 2>&1 &
+  --len_sort 1 --compile 1 --belief_coef $BCOEF --belief_lr 1e-3 $RES >> $R/train.out 2>&1 &
 TP=$!
 ( while kill -0 $TP 2>/dev/null; do
     if python3 -m ladis.bench --ckpt $R/latest.pt --snapshot --deals 4096 --B 2048 --refs $REFS --out $R/bench.jsonl >> $R/bench.out 2>&1; then
