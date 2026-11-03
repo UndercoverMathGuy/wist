@@ -4,8 +4,8 @@ rm -f runs/IDLE
 R=runs/tf1; mkdir -p $R/x
 rm -f $R/x/shard_*.pt
 RES=""; [ -f $R/ckpt.pt ] && RES="--resume $R/ckpt.pt"
-echo "=== restart $(date -Is): exit_coef 0.25, exit_start 85" >> $R/train.out
-python3 -m ladis.train --run $R --arch tf --d 256 --layers 6 --heads 8 --B 8192 --mb 4096 --lr 2e-4 \
+echo "=== restart $(date -Is): grad accumulation mb 16384 (micro 4096), exit_coef 0.25, exit_start 85" >> $R/train.out
+python3 -m ladis.train --run $R --arch tf --d 256 --layers 6 --heads 8 --B 8192 --mb 16384 --micro 4096 --lr 2e-4 \
   --eval_every 25 --snap_every 100 --latest_every 10 --exit_dir $R/x --exit_coef 0.25 --exit_start 85 \
   --hours 8 $RES >> $R/train.out 2>&1 &
 TP=$!

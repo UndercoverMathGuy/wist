@@ -213,6 +213,7 @@ def main():
     ap.add_argument("--lr", type=float, default=3e-4)
     ap.add_argument("--epochs", type=int, default=3)
     ap.add_argument("--mb", type=int, default=16384)
+    ap.add_argument("--micro", type=int, default=0, help="micro-batch for grad accumulation (0 = mb)")
     ap.add_argument("--clip", type=float, default=0.2)
     ap.add_argument("--ent", type=float, default=0.01)
     ap.add_argument("--ent_final", type=float, default=0.002)
@@ -297,37 +298,41 @@ def main():
         for ep in range(args.epochs):
             perm = torch.randperm(N, device=dev)
             for i in range(0, N, args.mb):
-                j = perm[i:i + args.mb]
-                o = obs_index(obs, j)
-                with torch.autocast(dev.type, dtype=torch.bfloat16, enabled=dev.type == "cuda"):
-                    lg = model.logits(o, leg[j]).float()
-                    v = model.value(o).float()
-                logp_all = F.log_softmax(lg, 1)
-                lp = logp_all.gather(1, act[j].unsqueeze(1)).squeeze(1)
-                p_all = logp_all.exp()
-                ent = -(p_all * torch.where(leg[j], logp_all, torch.zeros_like(logp_all))).sum(1).mean()
-                ratio = (lp - old_logp[j]).exp()
-                a = adv_n[j]
-                pl = -torch.min(ratio * a, ratio.clamp(1 - args.clip, 1 + args.clip) * a).mean()
-                vl = F.smooth_l1_loss(v, ret[j])
-                loss = pl + args.vcoef * vl - ent_coef * ent
-                if use_x:  # imitate the search's chosen card (expert iteration)
-                    xo, xa, xleg = replay.sample(max(1024, len(j) // 2))
-                    with torch.autocast(dev.type, dtype=torch.bfloat16, enabled=dev.type == "cuda"):
-                        xlg = model.logits(xo, xleg).float()
-                    xl = F.cross_entropy(xlg, xa)
-                    loss = loss + args.exit_coef * xl
-                    with torch.no_grad():
-                        stats["xl"] += xl.item(); stats["xa"] += (xlg.argmax(1) == xa).float().mean().item()
+                jb = perm[i:i + args.mb]
                 opt.zero_grad(set_to_none=True)
-                loss.backward()
+                micro = args.micro or args.mb
+                for c in range(0, len(jb), micro):  # gradient accumulation (memory)
+                    j = jb[c:c + micro]
+                    w = len(j) / len(jb)
+                    o = obs_index(obs, j)
+                    with torch.autocast(dev.type, dtype=torch.bfloat16, enabled=dev.type == "cuda"):
+                        lg = model.logits(o, leg[j]).float()
+                        v = model.value(o).float()
+                    logp_all = F.log_softmax(lg, 1)
+                    lp = logp_all.gather(1, act[j].unsqueeze(1)).squeeze(1)
+                    p_all = logp_all.exp()
+                    ent = -(p_all * torch.where(leg[j], logp_all, torch.zeros_like(logp_all))).sum(1).mean()
+                    ratio = (lp - old_logp[j]).exp()
+                    a = adv_n[j]
+                    pl = -torch.min(ratio * a, ratio.clamp(1 - args.clip, 1 + args.clip) * a).mean()
+                    vl = F.smooth_l1_loss(v, ret[j])
+                    loss = pl + args.vcoef * vl - ent_coef * ent
+                    if use_x:  # imitate the search's chosen card (expert iteration)
+                        xo, xa, xleg = replay.sample(max(1024, len(j) // 2))
+                        with torch.autocast(dev.type, dtype=torch.bfloat16, enabled=dev.type == "cuda"):
+                            xlg = model.logits(xo, xleg).float()
+                        xl = F.cross_entropy(xlg, xa)
+                        loss = loss + args.exit_coef * xl
+                        with torch.no_grad():
+                            stats["xl"] += xl.item(); stats["xa"] += (xlg.argmax(1) == xa).float().mean().item()
+                    (loss * w).backward()
+                    with torch.no_grad():
+                        stats["pl"] += pl.item(); stats["vl"] += vl.item(); stats["ent"] += ent.item()
+                        stats["kl"] += (old_logp[j] - lp).mean().item()
+                        stats["cf"] += ((ratio - 1).abs() > args.clip).float().mean().item()
+                        stats["n"] += 1
                 torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
                 opt.step()
-                with torch.no_grad():
-                    stats["pl"] += pl.item(); stats["vl"] += vl.item(); stats["ent"] += ent.item()
-                    stats["kl"] += (old_logp[j] - lp).mean().item()
-                    stats["cf"] += ((ratio - 1).abs() > args.clip).float().mean().item()
-                    stats["n"] += 1
         nb = stats.pop("n")
         rec = {k: v / nb for k, v in stats.items()}
         if replay is not None:
