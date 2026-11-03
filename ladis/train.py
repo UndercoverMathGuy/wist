@@ -237,6 +237,7 @@ def main():
     ap.add_argument("--exit_coef", type=float, default=1.0)
     ap.add_argument("--exit_cap", type=int, default=400000)
     ap.add_argument("--exit_min", type=int, default=4096)
+    ap.add_argument("--target_kl", type=float, default=0.0, help="stop epochs once minibatch KL exceeds this")
     ap.add_argument("--exit_start", type=int, default=0, help="iteration from which the imitation loss is on")
     ap.add_argument("--latest_every", type=int, default=10, help="save latest.pt for search workers")
     args = ap.parse_args()
@@ -255,7 +256,8 @@ def main():
     if args.resume:
         ck = torch.load(args.resume, map_location=dev)
         model.load_state_dict(ck["model"])
-        opt.load_state_dict(ck["opt"])
+        if "opt" in ck:
+            opt.load_state_dict(ck["opt"])
         it0 = ck["iter"]
     league.load_saved(model)
     if not league.snaps:
@@ -264,7 +266,7 @@ def main():
 
     def save_latest(it_):
         tmp = os.path.join(args.run, "latest.pt.tmp")
-        torch.save({"model": model.state_dict(), "iter": it_, "args": vars(args)}, tmp)
+        torch.save({"model": model.state_dict(), "opt": opt.state_dict(), "iter": it_, "args": vars(args)}, tmp)
         os.replace(tmp, os.path.join(args.run, "latest.pt"))
     save_latest(it0)
     mix = [float(x) for x in args.mix.split(",")]
@@ -295,9 +297,15 @@ def main():
         if replay is not None:
             replay.poll()
         use_x = replay is not None and len(replay) >= args.exit_min and it >= args.exit_start
+        early_stop = False
         for ep in range(args.epochs):
+            if early_stop:
+                break
             perm = torch.randperm(N, device=dev)
             for i in range(0, N, args.mb):
+                if early_stop:
+                    break
+                kl_mb, n_mb = 0.0, 0
                 jb = perm[i:i + args.mb]
                 opt.zero_grad(set_to_none=True)
                 micro = args.micro or args.mb
@@ -328,13 +336,18 @@ def main():
                     (loss * w).backward()
                     with torch.no_grad():
                         stats["pl"] += pl.item(); stats["vl"] += vl.item(); stats["ent"] += ent.item()
-                        stats["kl"] += (old_logp[j] - lp).mean().item()
+                        kl_c = (old_logp[j] - lp).mean().item()
+                        stats["kl"] += kl_c
+                        kl_mb += kl_c; n_mb += 1
                         stats["cf"] += ((ratio - 1).abs() > args.clip).float().mean().item()
                         stats["n"] += 1
                 torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
                 opt.step()
+                if args.target_kl > 0 and kl_mb / max(1, n_mb) > args.target_kl:
+                    early_stop = True  # standard PPO safeguard: stop updating on this batch
         nb = stats.pop("n")
-        rec = {k: v / nb for k, v in stats.items()}
+        rec = {k: v / max(1, nb) for k, v in stats.items()}
+        rec["early_stop"] = early_stop
         if replay is not None:
             rec.update(x_buf=len(replay), x_total=replay.total)
         if (it + 1) % args.latest_every == 0:

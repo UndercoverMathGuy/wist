@@ -1,15 +1,17 @@
-# job: tf1 retuned (from it-100 ckpt): 1 search worker, imitation weight 0.1, PIMC eval with small GPU batch
+# job: tf1 retuned: 1 search worker, imitation 0.1 (once replay >= 50k), PPO target-KL 0.03, small-batch PIMC eval
 # kill strays from previous jobs (nested subshells survive the runner's kill of direct children)
 pkill -f "ladis\." ; sleep 5; pkill -9 -f "ladis\." ; sleep 2
 pgrep -f "tools/authserve.py" >/dev/null || { setsid nohup python3 tools/authserve.py runs > http.log 2>&1 < /dev/null & }
 rm -f runs/IDLE
 R=runs/tf1; mkdir -p $R/x
 rm -f $R/x/shard_*.pt
+# resume from whichever checkpoint is newest (latest.pt is written every 10 iterations)
 RES=""; [ -f $R/ckpt.pt ] && RES="--resume $R/ckpt.pt"
-echo "=== restart $(date -Is): retune: 1 search worker, exit_coef 0.1" >> $R/train.out
+[ -f $R/latest.pt ] && [ $R/latest.pt -nt $R/ckpt.pt ] && RES="--resume $R/latest.pt"
+echo "=== restart $(date -Is): 1 search worker, exit_coef 0.1, target_kl 0.03, exit_min 50000 ($RES)" >> $R/train.out
 python3 -m ladis.train --run $R --arch tf --d 256 --layers 6 --heads 8 --B 8192 --mb 16384 --micro 4096 --lr 2e-4 \
-  --eval_every 25 --snap_every 100 --latest_every 10 --exit_dir $R/x --exit_coef 0.1 --exit_start 85 \
-  --hours 5.8 $RES >> $R/train.out 2>&1 &
+  --eval_every 25 --snap_every 100 --latest_every 10 --exit_dir $R/x --exit_coef 0.1 --exit_start 85 --exit_min 50000 --target_kl 0.03 \
+  --hours 5.4 $RES >> $R/train.out 2>&1 &
 TP=$!
 sleep 60
 python3 -m ladis.exit gen --ckpt $R/latest.pt --follow --search_mode critic --N 64 --beta 0 \
