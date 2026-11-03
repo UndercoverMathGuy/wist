@@ -39,6 +39,7 @@
     <div class="stat"><div class="k">vs v1 · pair</div><div class="v" id="s-pair">–</div></div>
     <div class="stat"><div class="k">vs v1 · one seat</div><div class="v" id="s-adhoc">–</div></div>
     <div class="stat"><div class="k">Points</div><div class="v" id="s-n">–</div></div>
+    <div class="stat"><div class="k">Next point in</div><div class="v" id="s-eta">–</div><div class="k" id="s-eta-sub"></div></div>
   </div>
 
   <div class="card">
@@ -99,6 +100,25 @@ function chart(id) {
 }
 
 const c1 = chart("c1"), c2 = chart("c2");
+let lastPointT = null, gapS = null;
+
+// ETA for the next benchmark point = last point time + typical recent gap (median of the last 6 gaps)
+function updateEta() {
+  const el = document.getElementById("s-eta"), sub = document.getElementById("s-eta-sub");
+  if (lastPointT === null || gapS === null) { el.textContent = "–"; return; }
+  const now = Date.now() / 1000, due = lastPointT + gapS, left = due - now;
+  const mmss = x => { x = Math.max(0, Math.round(x)); return Math.floor(x / 60) + ":" + String(x % 60).padStart(2, "0"); };
+  if (left >= 0) {
+    el.textContent = mmss(left);
+    el.style.color = "";
+    sub.textContent = "last point " + mmss(now - lastPointT) + " ago · typical gap " + mmss(gapS);
+  } else {
+    el.textContent = "+" + mmss(-left);
+    el.style.color = "#c0392b";
+    sub.textContent = "overdue (benchmark may be retrying) · last " + mmss(now - lastPointT) + " ago";
+  }
+}
+setInterval(updateEta, 1000);
 const fmt = v => (v >= 0 ? "+" : "") + v.toFixed(3);
 
 async function refresh() {
@@ -127,6 +147,13 @@ async function refresh() {
     document.getElementById("s-pair").textContent = last ? fmt(last.y) : "–";
     document.getElementById("s-adhoc").textContent = lasta ? fmt(lasta.y) : "–";
     document.getElementById("s-n").textContent = p1.length;
+    const ts = rows.filter(r => r[V1] && r.time).map(r => Date.parse(r.time) / 1000).sort((a, b) => a - b);
+    if (ts.length) {
+      lastPointT = ts[ts.length - 1];
+      const gaps = ts.slice(1).map((t, i) => t - ts[i]).filter(g => g > 60 && g < 3600).slice(-6).sort((a, b) => a - b);
+      gapS = gaps.length ? Math.min(900, Math.max(300, gaps[Math.floor(gaps.length / 2)])) : 540;
+    }
+    updateEta();
     document.getElementById("updated").textContent = "Last refresh " + new Date().toLocaleTimeString() + ".";
     document.getElementById("err").textContent = "";
   } catch (e) {
