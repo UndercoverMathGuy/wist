@@ -1,27 +1,26 @@
-# job: tf1 retuned: 1 search worker, imitation 0.1 (once replay >= 50k), PPO target-KL 0.03, small-batch PIMC eval
-# kill strays from previous jobs (nested subshells survive the runner's kill of direct children)
-pkill -f "ladis\." ; sleep 5; pkill -9 -f "ladis\." ; sleep 2
+# job: tf1 REWIND to iteration-150 checkpoint (end of the plain-PPO stretch), continue as PURE PPO (no search, no imitation)
+# kill strays: python processes AND orphaned loop subshells from earlier jobs
+pkill -f "ladis\." ; for p in $(pgrep -f "bash jobs/current.sh"); do [ "$p" != "$$" ] && kill "$p" 2>/dev/null; done
+sleep 5; pkill -9 -f "ladis\." ; sleep 2
 pgrep -f "tools/authserve.py" >/dev/null || { setsid nohup python3 tools/authserve.py runs > http.log 2>&1 < /dev/null & }
 rm -f runs/IDLE
-R=runs/tf1; mkdir -p $R/x
+R=runs/tf1
+# preserve the rewind point before the eval loop can overwrite ckpt_eval.pt
+[ -f $R/ckpt_it150_rewind.pt ] || cp $R/ckpt_eval.pt $R/ckpt_it150_rewind.pt
+# keep the abandoned imitation branch for reference
+[ -f $R/ckpt_imitation_branch.pt ] || cp $R/latest.pt $R/ckpt_imitation_branch.pt
 rm -f $R/x/shard_*.pt
-# resume from whichever checkpoint is newest (latest.pt is written every 10 iterations)
-RES=""; [ -f $R/ckpt.pt ] && RES="--resume $R/ckpt.pt"
-[ -f $R/latest.pt ] && [ $R/latest.pt -nt $R/ckpt.pt ] && RES="--resume $R/latest.pt"
-echo "=== restart $(date -Is): 1 search worker, exit_coef 0.1, target_kl 0.03, exit_min 50000 ($RES)" >> $R/train.out
+echo "=== restart $(date -Is): REWIND to ckpt_it150_rewind.pt, pure PPO (no search/imitation), target_kl 0.03" >> $R/train.out
 python3 -m ladis.train --run $R --arch tf --d 256 --layers 6 --heads 8 --B 8192 --mb 16384 --micro 4096 --lr 2e-4 \
-  --eval_every 25 --snap_every 100 --latest_every 10 --exit_dir $R/x --exit_coef 0.1 --exit_start 85 --exit_min 50000 --target_kl 0.03 \
-  --hours 5.4 $RES >> $R/train.out 2>&1 &
+  --eval_every 25 --snap_every 100 --latest_every 10 --target_kl 0.03 \
+  --hours 4.3 --resume $R/ckpt_it150_rewind.pt >> $R/train.out 2>&1 &
 TP=$!
-sleep 60
-python3 -m ladis.exit gen --ckpt $R/latest.pt --follow --search_mode critic --N 64 --beta 0 \
-  --data $R/x --games 100000000 --shard_games 128 --seed 21 >> $R/gen_1.out 2>&1 &
 ( while kill -0 $TP 2>/dev/null; do
     sleep 2400
     [ -f $R/ckpt.pt ] || continue
     cp $R/ckpt.pt $R/ckpt_eval.pt
-    python3 -m ladis.eval --ckpt $R/ckpt_eval.pt --device cuda --nn_B 500 --B 50 --deals 200 --pimc_k 16 --workers 10 --out $R/pimc_eval.jsonl >> $R/eval.out 2>&1
+    python3 -m ladis.eval --ckpt $R/ckpt_eval.pt --device cuda --nn_B 500 --B 50 --deals 200 --pimc_k 16 --workers 12 --out $R/pimc_eval.jsonl >> $R/eval.out 2>&1
   done ) &
 wait $TP
-pkill -f "ladis.exit gen"; pkill -f "ladis.eval"
+pkill -f "ladis.eval"
 date -Is > runs/IDLE
