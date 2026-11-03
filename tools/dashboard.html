@@ -49,8 +49,8 @@
   </div>
 
   <div class="card">
-    <h2>vs iteration-150 checkpoint (progress since the rewind)</h2>
-    <p>Head-to-head against the frozen iteration-150 model, benchmarked up to ~iteration 215 (later points are vs v1 only, to bench twice as often). Purple = abandoned imitation branch at iteration 200.</p>
+    <h2>vs frozen tf1 checkpoints (progress since a fixed point)</h2>
+    <p>Head-to-head against frozen tf1 models: the iteration-150 rewind point (up to ~it 215) and, from ~11:55 UTC, the <b>anchor</b> checkpoint frozen then (primary independent benchmark). Purple = abandoned imitation branch.</p>
     <div class="chartbox"><canvas id="c2"></canvas></div>
   </div>
 </main>
@@ -136,7 +136,12 @@ async function refresh() {
 
     const p2 = series(main, RW, "pair"), a2 = series(main, RW, "adhoc");
     const ip = series(imit, RW, "pair");
-    c2.data.datasets = [...band(p2, css("--pair"), "pair"), ...band(a2, css("--adhoc"), "one seat"),
+    const AK = [...new Set(rows.flatMap(r => Object.keys(r)).filter(k => k.startsWith("tf1/ckpt_anchor")))];
+    const anc = AK.flatMap(k => {
+      const lab = "vs anchor " + k.replace("tf1/ckpt_anchor_", "").replace(".pt", "");
+      return [...band(series(main, k, "pair"), "#2a9d8f", lab + " pair"), ...band(series(main, k, "adhoc"), "#e76f51", lab + " one seat")];
+    });
+    c2.data.datasets = [...anc, ...band(p2, css("--pair"), "pair (vs it150)"), ...band(a2, css("--adhoc"), "one seat (vs it150)"),
       {label: "imitation branch (pair)", data: ip.map(p => ({x: p.x, y: p.y})), borderColor: css("--imit"),
        backgroundColor: css("--imit"), pointRadius: 6, pointStyle: "rectRot", showLine: false},
       {label: "rewind level", data: zero(p2), borderColor: css("--zero"), borderDash: [6, 4], pointRadius: 0, borderWidth: 1}];
