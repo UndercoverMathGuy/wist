@@ -236,6 +236,7 @@ def main():
     ap.add_argument("--exit_coef", type=float, default=1.0)
     ap.add_argument("--exit_cap", type=int, default=400000)
     ap.add_argument("--exit_min", type=int, default=4096)
+    ap.add_argument("--exit_start", type=int, default=0, help="iteration from which the imitation loss is on")
     ap.add_argument("--latest_every", type=int, default=10, help="save latest.pt for search workers")
     args = ap.parse_args()
 
@@ -292,7 +293,7 @@ def main():
         stats = dict(pl=0.0, vl=0.0, ent=0.0, kl=0.0, cf=0.0, xl=0.0, xa=0.0, n=0)
         if replay is not None:
             replay.poll()
-        use_x = replay is not None and len(replay) >= args.exit_min
+        use_x = replay is not None and len(replay) >= args.exit_min and it >= args.exit_start
         for ep in range(args.epochs):
             perm = torch.randperm(N, device=dev)
             for i in range(0, N, args.mb):
