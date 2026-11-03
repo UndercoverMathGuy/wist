@@ -135,21 +135,37 @@ class SearchPolicy:
             counts = [int(hands[gi, s].sum()) for s in range(NS)]
             vd = void[gi].tolist()
             base = owner_real[gi].clone()  # played cards keep their true owner; my cards are mine
+            last_ok = None
             for n in range(N):
                 if bel_abs is not None:
                     w, lw = sample_world_weighted(self.rng, me, my_hand, unseen, counts, vd, bel_abs[gi])
                     logw[gi * N + n] = lw
                 else:
                     w = sample_world(self.rng, me, my_hand, unseen, counts, vd)
-                o = base.clone()
-                if w is None:  # never fall back to the true layout
+                if w is None:
+                    # Excluded from the average (zero weight), but the world must still be *consistent*:
+                    # every world replays the real history, which an impossible layout cannot do.
+                    # Never fall back to the true layout.
                     failed[gi * N + n] = True
-                    o[[c for c in unseen]] = (me + 1) % NS
-                else:
-                    for s in range(NS):
-                        if s != me:
-                            o[w[s]] = s
+                    w = sample_world(self.rng, me, my_hand, unseen, counts, vd)
+                o = base.clone()
+                if w is None:
+                    if last_ok is None:  # extremely unlikely: keep trying uniform consistent layouts
+                        for _ in range(20):
+                            w = sample_world(self.rng, me, my_hand, unseen, counts, vd)
+                            if w is not None:
+                                break
+                    if w is None and last_ok is not None:
+                        owners[gi * N + n] = last_ok
+                        continue
+                if w is None:
+                    raise RuntimeError("could not sample any layout consistent with the history")
+                for s in range(NS):
+                    if s != me:
+                        o[w[s]] = s
                 owners[gi * N + n] = o
+                if not failed[gi * N + n]:
+                    last_ok = o
         rep = torch.arange(G, device=dev).repeat_interleave(N)
         W = WhistBatch(G * N, dev).reset(leader=env.first_leader[games][rep], deal=owners.to(dev))
         me_rep = env.cur[games][rep]

@@ -1,11 +1,15 @@
-# job: FINAL. Stop training (graceful save) -> belief-weighted search eval of the final tf1 checkpoint,
+# job: FINAL (relaunch after the 13:56 sampler-fallback crash). Belief-weighted search eval of the final tf1 checkpoint,
 #      with the whole GPU, results written per matchup as they finish (money runs out ~16:50 UTC).
 pkill -f "ladis\." ; for p in $(pgrep -f "bash jobs/current.sh"); do [ "$p" != "$$" ] && kill "$p" 2>/dev/null; done
 for i in $(seq 1 30); do pgrep -f "ladis\.train" >/dev/null || break; sleep 5; done
 pkill -9 -f "ladis\." ; sleep 2
 pgrep -f "tools/authserve.py" >/dev/null || { setsid nohup python3 tools/authserve.py runs > http.log 2>&1 < /dev/null & }
 R=runs/tf1
-cp $R/latest.pt $R/ckpt_final.pt
+rm -f runs/FINAL_EVAL_DONE
+for f in runs/final_eval.jsonl.partial runs/final_eval_uniform.jsonl.partial runs/final_eval.out runs/final_eval_uniform.out; do
+  [ -f $f ] && mv $f $f.crashed_1355
+done
+[ -f $R/ckpt_final.pt ] || cp $R/latest.pt $R/ckpt_final.pt
 echo "=== FINAL: training stopped $(date -Is) for the belief-search eval" >> $R/train.out
 date -Is > runs/FINAL_EVAL_STARTED
 # 1) belief-weighted search: vs the plain network (GPU only), then vs PIMC, one-seat vs PIMC, network vs PIMC

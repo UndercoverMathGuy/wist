@@ -65,3 +65,20 @@ def test_search_ignores_hidden_cards():
                 assert torch.equal(a1, a2), f"search ({prior}) decision depends on hidden cards"
                 # every card's estimated value must match too, not just the final pick
                 assert torch.equal(s1.q.nan_to_num(-1), s2.q.nan_to_num(-1)), f"search ({prior}) values leak"
+
+
+def test_search_survives_sampler_failures(monkeypatch):
+    """If the belief-weighted sampler fails, the search must still only replay consistent layouts."""
+    import ladis.search as S
+    model = ActorCritic(arch="tf", d=32, layers=1, heads=2).eval()
+    A, _, _ = _twin_games(steps=21, seed=5)
+    calls = {"n": 0}
+    real = S.sample_world_weighted
+
+    def flaky(*a, **k):
+        calls["n"] += 1
+        return (None, 0.0) if calls["n"] % 3 == 0 else real(*a, **k)
+    monkeypatch.setattr(S, "sample_world_weighted", flaky)
+    sp = SearchPolicy(model, N=12, seed=3, prior="belief")
+    a = sp(A)  # must not raise "illegal action" during the history replay
+    assert A.legal_mask()[0, a[0]]
