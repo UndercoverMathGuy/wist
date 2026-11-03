@@ -22,14 +22,27 @@ from .search import SearchPolicy
 
 
 @torch.no_grad()
-def generate(model, games, out_dir, N, M, beta, device, shard_games=64, seed=0):
+def generate(model, games, out_dir, N, M, beta, device, shard_games=64, seed=0, mode="rollout",
+             follow_ckpt=""):
+    """follow_ckpt: reload this checkpoint before every shard (async expert iteration)."""
     os.makedirs(out_dir, exist_ok=True)
-    sp = SearchPolicy(model, N=N, M=M, beta=beta, seed=seed)
+    sp = SearchPolicy(model, N=N, M=M, beta=beta, seed=seed, mode=mode)
+    mtime = None
     g = torch.Generator(device=device)
     g.manual_seed(seed)
     done = 0
     k = len(glob.glob(os.path.join(out_dir, "shard_*.pt")))
     while done < games:
+        if follow_ckpt:
+            while not os.path.exists(follow_ckpt):
+                time.sleep(10)
+            mt = os.path.getmtime(follow_ckpt)
+            if mt != mtime:
+                try:
+                    sp.model = load(follow_ckpt, device)
+                    mtime = mt
+                except Exception as e:  # checkpoint mid-write; retry next shard
+                    print(json.dumps({"reload_error": str(e)[:200]}), flush=True)
         t = time.time()
         env = WhistBatch(shard_games, device, gen=g).reset()
         O, L, Q, A = [], [], [], []
@@ -40,8 +53,10 @@ def generate(model, games, out_dir, N, M, beta, device, shard_games=64, seed=0):
             O.append({k: v.cpu() for k, v in obs.items()}); L.append(legal.cpu()); Q.append(sp.q.half().cpu()); A.append(a.cpu())
             env.step(a)
         print(json.dumps({"deviations": sp.n_dev, "decisions": sp.n_dec}), flush=True)
-        torch.save({"obs": {k: torch.cat([o[k] for o in O]) for k in O[0]}, "legal": torch.cat(L), "q": torch.cat(Q), "act": torch.cat(A)},
-                   os.path.join(out_dir, f"shard_{seed}_{k:05d}.pt"))
+        path = os.path.join(out_dir, f"shard_{seed}_{k:05d}.pt")
+        torch.save({"obs": {k2: torch.cat([o[k2] for o in O]) for k2 in O[0]}, "legal": torch.cat(L),
+                    "q": torch.cat(Q), "act": torch.cat(A)}, path + ".tmp")
+        os.replace(path + ".tmp", path)  # atomic: readers never see half-written shards
         k += 1
         done += shard_games
         print(json.dumps({"gen_games": done, "secs": round(time.time() - t, 1)}), flush=True)
@@ -99,9 +114,15 @@ def main():
     ap.add_argument("--target", default="action", choices=["action", "q"])
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--search_mode", default="rollout", choices=["rollout", "critic"])
+    ap.add_argument("--follow", action="store_true", help="reload --ckpt before every shard")
     a = ap.parse_args()
     if a.mode == "gen":
-        generate(load(a.ckpt, a.device), a.games, a.data, a.N, a.M, a.beta, a.device, a.shard_games, a.seed)
+        if a.follow:
+            while not os.path.exists(a.ckpt):
+                time.sleep(10)
+        generate(load(a.ckpt, a.device), a.games, a.data, a.N, a.M, a.beta, a.device, a.shard_games, a.seed,
+                 mode=a.search_mode, follow_ckpt=a.ckpt if a.follow else "")
     else:
         distill(a.ckpt, a.data, a.out, a.device, a.tau, a.epochs, target_kind=a.target)
 

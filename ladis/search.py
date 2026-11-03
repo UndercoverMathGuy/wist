@@ -24,7 +24,8 @@ from .pimc import sample_world
 class SearchPolicy:
     wants_mask = True
 
-    def __init__(self, model, N=128, M=32, beta=0.5, floor=0.1, seed=0, max_batch=32768, z=2.0, margin=0.0):
+    def __init__(self, model, N=128, M=32, beta=0.5, floor=0.1, seed=0, max_batch=32768, z=2.0, margin=0.0,
+                 mode="rollout"):
         self.model = model
         self.N, self.M, self.beta, self.floor = N, M, beta, floor
         self.rng = random.Random(seed)
@@ -33,6 +34,7 @@ class SearchPolicy:
         self.n_dev = 0
         self.n_dec = 0
         self.ess_log = []
+        self.mode = mode  # "rollout": play every world out with the policy; "critic": 1-step + value net
 
     @torch.no_grad()
     def _logits(self, W):
@@ -123,10 +125,24 @@ class SearchPolicy:
         acts = cand.unsqueeze(1).expand(G, M, 13).reshape(-1)
         my_team = (env.cur[games] % 2).repeat_interleave(M * 13)
         E.step(acts)
-        while not E.finished:
-            lg, _ = self._logits(E)
-            E.step(lg.argmax(1))
-        R = E.tricks.gather(1, my_team.unsqueeze(1)).squeeze(1).float().view(G, M, 13)
+        if self.mode == "critic":
+            # Q = trick margin banked so far + critic's estimate of the remaining margin, seen from
+            # my team (critic values are from the next actor's team, so flip sign for opponents)
+            opp_team = 1 - my_team
+            banked = (E.tricks.gather(1, my_team.unsqueeze(1)) - E.tricks.gather(1, opp_team.unsqueeze(1))).squeeze(1).float()
+            if E.finished:
+                fut = torch.zeros_like(banked)
+            else:
+                ob = self.model.observe(E, oracle=True)
+                with torch.autocast(dev.type, dtype=torch.bfloat16, enabled=dev.type == "cuda"):
+                    v = self.model.value(ob).float()
+                fut = torch.where((E.cur % 2) == my_team, v, -v)
+            R = (banked + fut).view(G, M, 13) / 2.0  # margin/2 ~ "tricks" units
+        else:
+            while not E.finished:
+                lg, _ = self._logits(E)
+                E.step(lg.argmax(1))
+            R = E.tricks.gather(1, my_team.unsqueeze(1)).squeeze(1).float().view(G, M, 13)
         sc = torch.where(slot_valid, (wts.unsqueeze(2) * R).sum(1), torch.full_like(R[:, 0], -1e9))
         # default = the network's own greedy card; deviate only on a significant paired gain
         lg0, _ = self._logits(select(env, games))

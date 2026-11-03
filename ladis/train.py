@@ -37,12 +37,62 @@ def nn_policy(model, greedy=True):
     return pol
 
 
+class ExitReplay:
+    """Replay of search decisions written by `ladis.exit gen --follow` workers."""
+
+    def __init__(self, path, cap, device):
+        self.path, self.cap, self.device = path, cap, device
+        self.obs, self.act, self.legal = None, None, None
+        self.total = 0
+        os.makedirs(path, exist_ok=True)
+
+    def poll(self):
+        import glob
+        for f in sorted(glob.glob(os.path.join(self.path, "shard_*.pt"))):
+            try:
+                d = torch.load(f, map_location=self.device)
+            except Exception:
+                continue
+            os.remove(f)
+            keep = d["legal"].sum(1) > 1  # forced moves teach nothing
+            obs = {k: v[keep] for k, v in d["obs"].items()}
+            act = d["act"][keep]
+            legal = d["legal"][keep]
+            if self.obs is None:
+                self.obs, self.act, self.legal = obs, act, legal
+            else:
+                self.obs = {k: torch.cat([self.obs[k], obs[k]])[-self.cap:] for k in obs}
+                self.act = torch.cat([self.act, act])[-self.cap:]
+                self.legal = torch.cat([self.legal, legal])[-self.cap:]
+            self.total += len(act)
+
+    def __len__(self):
+        return 0 if self.act is None else len(self.act)
+
+    def sample(self, n):
+        j = torch.randint(0, len(self), (n,), device=self.device)
+        return {k: v[j] for k, v in self.obs.items()}, self.act[j], self.legal[j]
+
+
 class League:
-    def __init__(self, max_snaps=12):
+    def __init__(self, max_snaps=12, save_dir=""):
         self.snaps: list[torch.nn.Module] = []
         self.max_snaps = max_snaps
+        self.save_dir = save_dir
 
-    def add(self, model):
+    def load_saved(self, template):
+        import glob
+        if not self.save_dir:
+            return
+        for f in sorted(glob.glob(os.path.join(self.save_dir, "snap_*.pt")))[-self.max_snaps:]:
+            m = copy.deepcopy(template)
+            m.load_state_dict(torch.load(f, map_location=next(template.parameters()).device))
+            self.add(m, save=False)
+
+    def add(self, model, save=True, tag=None):
+        if save and self.save_dir and tag is not None:
+            os.makedirs(self.save_dir, exist_ok=True)
+            torch.save(model.state_dict(), os.path.join(self.save_dir, f"snap_{tag:07d}.pt"))
         m = copy.deepcopy(model).eval()
         for p in m.parameters():
             p.requires_grad_(False)
@@ -182,6 +232,11 @@ def main():
     ap.add_argument("--layers", type=int, default=6)
     ap.add_argument("--heads", type=int, default=8)
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--exit_dir", default="", help="dir where search workers drop shards")
+    ap.add_argument("--exit_coef", type=float, default=1.0)
+    ap.add_argument("--exit_cap", type=int, default=400000)
+    ap.add_argument("--exit_min", type=int, default=4096)
+    ap.add_argument("--latest_every", type=int, default=10, help="save latest.pt for search workers")
     args = ap.parse_args()
 
     os.makedirs(args.run, exist_ok=True)
@@ -193,14 +248,23 @@ def main():
     model = ActorCritic(args.width, args.depth, hist=args.hist, arch=args.arch, d=args.d,
                         layers=args.layers, heads=args.heads).to(dev)
     opt = torch.optim.Adam(model.parameters(), lr=args.lr, eps=1e-5)
-    league = League()
+    league = League(save_dir=os.path.join(args.run, "snaps"))
     it0 = 0
     if args.resume:
         ck = torch.load(args.resume, map_location=dev)
         model.load_state_dict(ck["model"])
         opt.load_state_dict(ck["opt"])
         it0 = ck["iter"]
-    league.add(model)
+    league.load_saved(model)
+    if not league.snaps:
+        league.add(model, tag=it0)
+    replay = ExitReplay(args.exit_dir, args.exit_cap, dev) if args.exit_dir else None
+
+    def save_latest(it_):
+        tmp = os.path.join(args.run, "latest.pt.tmp")
+        torch.save({"model": model.state_dict(), "iter": it_, "args": vars(args)}, tmp)
+        os.replace(tmp, os.path.join(args.run, "latest.pt"))
+    save_latest(it0)
     mix = [float(x) for x in args.mix.split(",")]
     gen = None
     logf = open(os.path.join(args.run, "log.jsonl"), "a")
@@ -225,7 +289,10 @@ def main():
         frac = min(1.0, it / max(1, args.ent_iters))
         ent_coef = args.ent + (args.ent_final - args.ent) * frac
         model.train()
-        stats = dict(pl=0.0, vl=0.0, ent=0.0, kl=0.0, cf=0.0, n=0)
+        stats = dict(pl=0.0, vl=0.0, ent=0.0, kl=0.0, cf=0.0, xl=0.0, xa=0.0, n=0)
+        if replay is not None:
+            replay.poll()
+        use_x = replay is not None and len(replay) >= args.exit_min
         for ep in range(args.epochs):
             perm = torch.randperm(N, device=dev)
             for i in range(0, N, args.mb):
@@ -243,6 +310,14 @@ def main():
                 pl = -torch.min(ratio * a, ratio.clamp(1 - args.clip, 1 + args.clip) * a).mean()
                 vl = F.smooth_l1_loss(v, ret[j])
                 loss = pl + args.vcoef * vl - ent_coef * ent
+                if use_x:  # imitate the search's chosen card (expert iteration)
+                    xo, xa, xleg = replay.sample(max(1024, len(j) // 2))
+                    with torch.autocast(dev.type, dtype=torch.bfloat16, enabled=dev.type == "cuda"):
+                        xlg = model.logits(xo, xleg).float()
+                    xl = F.cross_entropy(xlg, xa)
+                    loss = loss + args.exit_coef * xl
+                    with torch.no_grad():
+                        stats["xl"] += xl.item(); stats["xa"] += (xlg.argmax(1) == xa).float().mean().item()
                 opt.zero_grad(set_to_none=True)
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
@@ -254,10 +329,14 @@ def main():
                     stats["n"] += 1
         nb = stats.pop("n")
         rec = {k: v / nb for k, v in stats.items()}
+        if replay is not None:
+            rec.update(x_buf=len(replay), x_total=replay.total)
+        if (it + 1) % args.latest_every == 0:
+            save_latest(it + 1)
         rec.update(it=it, N=N, sps=N / (time.time() - t0), dt=time.time() - t0,
                    samples=n_samples, hours=(time.time() - t_start) / 3600, ent_coef=ent_coef, **st)
         if (it + 1) % args.snap_every == 0:
-            league.add(model)
+            league.add(model, tag=it + 1)
         if (it + 1) % args.eval_every == 0 or it == it0:
             model.eval()
             g = nn_policy(model, greedy=True)
