@@ -3,7 +3,7 @@ pgrep -f "tools/authserve.py" >/dev/null || { setsid nohup python3 tools/authser
 rm -f runs/IDLE
 R=runs/tf1; mkdir -p $R/x
 RES=""; [ -f $R/ckpt.pt ] && RES="--resume $R/ckpt.pt"
-python3 -m ladis.train --run $R --arch tf --d 256 --layers 6 --heads 8 --B 8192 --mb 16384 --lr 2e-4 \
+python3 -m ladis.train --run $R --arch tf --d 256 --layers 6 --heads 8 --B 8192 --mb 4096 --lr 2e-4 \
   --eval_every 25 --snap_every 100 --latest_every 10 --exit_dir $R/x --exit_coef 1.0 --hours 9 $RES >> $R/train.out 2>&1 &
 TP=$!
 sleep 90
