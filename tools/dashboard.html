@@ -39,6 +39,7 @@
     <div class="stat"><div class="k">vs v1 · pair</div><div class="v" id="s-pair">–</div></div>
     <div class="stat"><div class="k">vs v1 · one seat</div><div class="v" id="s-adhoc">–</div></div>
     <div class="stat"><div class="k">Points</div><div class="v" id="s-n">–</div></div>
+    <div class="stat"><div class="k">Belief accuracy</div><div class="v" id="s-bel">–</div><div class="k" id="s-bel-sub"></div></div>
     <div class="stat"><div class="k">Next point in</div><div class="v" id="s-eta">–</div><div class="k" id="s-eta-sub"></div></div>
   </div>
 
@@ -49,8 +50,9 @@
   </div>
 
   <div class="card">
-    <h2>vs frozen tf1 checkpoints (progress since a fixed point)</h2>
-    <p>Head-to-head against frozen tf1 models: the iteration-150 rewind point (up to ~it 215) and, from ~11:55 UTC, the <b>anchor</b> checkpoint frozen then (primary independent benchmark). Purple = abandoned imitation branch.</p>
+    <h2>Belief head accuracy (who holds each unseen card)</h2>
+    <p>Share of other players' cards the network assigns to the right seat (LHO / partner / RHO), vs the naive
+       guess "the seat holding the most cards". Iterations 481–494 are the A/B belief arm; 495+ main training.</p>
     <div class="chartbox"><canvas id="c2"></canvas></div>
   </div>
 </main>
@@ -134,17 +136,29 @@ async function refresh() {
       {label: "v1 level", data: zero(p1), borderColor: css("--zero"), borderDash: [6, 4], pointRadius: 0, borderWidth: 1}];
     c1.update();
 
-    const p2 = series(main, RW, "pair"), a2 = series(main, RW, "adhoc");
-    const ip = series(imit, RW, "pair");
-    const AK = [...new Set(rows.flatMap(r => Object.keys(r)).filter(k => k.startsWith("tf1/ckpt_anchor")))];
-    const anc = AK.flatMap(k => {
-      const lab = "vs anchor " + k.replace("tf1/ckpt_anchor_", "").replace(".pt", "");
-      return [...band(series(main, k, "pair"), "#2a9d8f", lab + " pair"), ...band(series(main, k, "adhoc"), "#e76f51", lab + " one seat")];
-    });
-    c2.data.datasets = [...anc, ...band(p2, css("--pair"), "pair (vs it150)"), ...band(a2, css("--adhoc"), "one seat (vs it150)"),
-      {label: "imitation branch (pair)", data: ip.map(p => ({x: p.x, y: p.y})), borderColor: css("--imit"),
-       backgroundColor: css("--imit"), pointRadius: 6, pointStyle: "rectRot", showLine: false},
-      {label: "rewind level", data: zero(p2), borderColor: css("--zero"), borderDash: [6, 4], pointRadius: 0, borderWidth: 1}];
+    // belief accuracy from the training logs (A/B arm B, then main tf1)
+    const logs = [];
+    for (const path of ["/abB/log.jsonl", "/tf1/log.jsonl"]) {
+      try {
+        const t = await (await fetch(path, {cache: "no-store", credentials: "same-origin"})).text();
+        for (const l of t.trim().split("\n")) { if (l) { const r = JSON.parse(l); if (r.bl > 0) logs.push(r); } }
+      } catch (e) {}
+    }
+    const byIt = new Map();
+    for (const r of logs) byIt.set(r.it, r);  // main run overrides the A/B arm at the same iteration
+    const L = [...byIt.values()].sort((a, b) => a.it - b.it);
+    c2.data.datasets = [
+      {label: "belief accuracy", data: L.map(r => ({x: r.it, y: r.bacc})), borderColor: "#2a9d8f",
+       backgroundColor: "#2a9d8f", pointRadius: 2, borderWidth: 2, tension: 0.2},
+      {label: "naive baseline", data: L.map(r => ({x: r.it, y: r.bbase})), borderColor: css("--zero"),
+       borderDash: [6, 4], pointRadius: 0, borderWidth: 1.5},
+      {label: "1/3 (pure guess)", data: L.length ? [{x: L[0].it, y: 1/3}, {x: L[L.length - 1].it, y: 1/3}] : [],
+       borderColor: css("--line"), borderDash: [2, 4], pointRadius: 0, borderWidth: 1},
+    ];
+    c2.options.scales.y.title.text = "accuracy";
+    const lb = L[L.length - 1];
+    document.getElementById("s-bel").textContent = lb ? (100 * lb.bacc).toFixed(1) + "%" : "–";
+    document.getElementById("s-bel-sub").textContent = lb ? "baseline " + (100 * lb.bbase).toFixed(1) + "% · it " + lb.it : "";
     c2.update();
 
     const last = p1[p1.length - 1], lasta = a1[a1.length - 1];
