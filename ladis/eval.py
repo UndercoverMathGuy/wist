@@ -69,9 +69,10 @@ def main():
                     f.write(json.dumps({"stage": key, "result": res[key], "secs": res[key + "_secs"],
                                         "search": res["search"], "ckpt": args.ckpt}) + "\n")
         stage("search_vs_nn", lambda: duplicate(sp, g, args.nn_deals or args.deals, **D))
-        stage("search_vs_pimc", lambda: duplicate(sp, pm, args.deals, **D))
-        stage("adhoc_search+pimc_vs_pimc", lambda: duplicate((sp, pm), pm, args.deals, **D))
-        stage("nn_vs_pimc_same_deals", lambda: duplicate(g, pm, args.deals, **D))
+        if args.deals > 0:  # --deals 0: only the (GPU-only) search-vs-network check
+            stage("search_vs_pimc", lambda: duplicate(sp, pm, args.deals, **D))
+            stage("adhoc_search+pimc_vs_pimc", lambda: duplicate((sp, pm), pm, args.deals, **D))
+            stage("nn_vs_pimc_same_deals", lambda: duplicate(g, pm, args.deals, **D))
     else:
         res["nn_vs_rule"] = duplicate(g, rule_bot, 20000, B=args.nn_B, seed=args.seed, device=args.device)
         res["pimc_vs_rule"] = duplicate(pm, rule_bot, args.deals, **D)
