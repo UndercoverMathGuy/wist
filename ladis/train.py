@@ -266,6 +266,7 @@ def main():
     ap.add_argument("--cudagraph", type=int, default=0, help="CUDA-graph the inference (rollout) path")
     ap.add_argument("--critic_from", default="", help="replace the critic with this checkpoint's critic")
     ap.add_argument("--belief_coef", type=float, default=0.0, help="weight of the auxiliary belief loss (tf only)")
+    ap.add_argument("--belief_lr", type=float, default=-1.0, help="own lr for the (fresh) belief head (default: main lr)")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--exit_dir", default="", help="dir where search workers drop shards")
     ap.add_argument("--exit_coef", type=float, default=1.0)
@@ -294,6 +295,7 @@ def main():
     base_p = [p for n, p in model.named_parameters() if ".belief." not in n]
     bel_p = [p for n, p in model.named_parameters() if ".belief." in n]
     fused = dev.type == "cuda"
+    bel_ids = {id(p_) for p_ in bel_p}
     opt = torch.optim.Adam([{"params": base_p}] + ([{"params": bel_p}] if bel_p else []), lr=args.lr, eps=1e-5,
                            fused=fused)
     league = League(save_dir=os.path.join(args.run, "snaps"))
@@ -338,7 +340,8 @@ def main():
         frac_t = min(1.0, (time.time() - t_start) / 3600 / max(1e-6, args.hours))
         lr_now = args.lr if args.lr_end < 0 else args.lr + (args.lr_end - args.lr) * frac_t
         for g in opt.param_groups:  # also overrides the lr stored in a resumed optimizer state
-            g["lr"] = lr_now
+            is_bel = any(id(p_) in bel_ids for p_ in g["params"])
+            g["lr"] = args.belief_lr if (is_bel and args.belief_lr > 0) else lr_now
         if stop["flag"]:
             save_latest(it)
             print(json.dumps({"stopped": "SIGTERM", "saved_iter": it}), flush=True)
