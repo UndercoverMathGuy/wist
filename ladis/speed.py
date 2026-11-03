@@ -14,7 +14,7 @@ import torch.nn.functional as F
 from .bots import rule_bot
 from .engine import WhistBatch
 from .model import ActorCritic, obs_index
-from .train import micro_chunks
+from .train import League, micro_chunks, rollout
 
 
 def collect(model, B, device):
@@ -48,6 +48,48 @@ def train_pass(model, opt, obs, legal, N, mb, micro, len_sort, ref):
         opt.step()
 
 
+def real_rollout(B, dev):
+    """Time the actual training rollout (learner + 2 league snapshots + rule bot) with the compiled
+    core, without and with CUDA graphs on the inference path. Also profile GPU busy fraction."""
+    import logging
+    logging.getLogger("torch.utils._sympy.interp").setLevel(logging.ERROR)
+    out = {}
+    torch.manual_seed(0)
+    model = ActorCritic(arch="tf", d=256, layers=6, heads=8).to(dev).eval()
+    model.actor.compile_core()
+    league = League()
+    league.add(model)
+    league.add(model)
+    mix = [0.5, 0.2, 0.3]
+    for name, graphs in (("compiled", False), ("compiled+cudagraph", True)):
+        try:
+            if graphs:
+                model.actor.enable_cudagraphs()
+            for _ in range(2):  # warm-up: compile / capture every shape
+                rollout(model, league, B, dev, mix, None)
+            sync()
+            t0 = time.time()
+            for _ in range(2):
+                rollout(model, league, B, dev, mix, None)
+            sync()
+            secs = (time.time() - t0) / 2
+            prof = torch.profiler.profile(activities=[torch.profiler.ProfilerActivity.CUDA,
+                                                      torch.profiler.ProfilerActivity.CPU])
+            sync()
+            t0 = time.time()
+            with prof:
+                rollout(model, league, B, dev, mix, None)
+                sync()
+            wall = time.time() - t0
+            gpu_us = sum(e.self_device_time_total for e in prof.key_averages() if e.self_device_time_total > 0)
+            out[name] = {"secs_per_rollout": round(secs, 3), "gpu_busy_frac": round(gpu_us / 1e6 / wall, 3)}
+        except Exception as e:
+            out[name] = {"error": repr(e)[:400]}
+        print(json.dumps({name: out[name]}), flush=True)
+    model.actor._core_graph = None
+    return out
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", default="")
@@ -55,6 +97,7 @@ def main():
     ap.add_argument("--mb", type=int, default=16384)
     ap.add_argument("--micro", type=int, default=4096)
     ap.add_argument("--B", type=int, default=8192)
+    ap.add_argument("--rollout_only", action="store_true", help="only the real-rollout / CUDA-graph test")
     a = ap.parse_args()
     dev = torch.device("cuda")
     torch.manual_seed(0)
@@ -65,6 +108,13 @@ def main():
     sel = torch.randperm(len(legal), device=dev)[:a.N]
     obs, legal = obs_index(obs, sel), legal[sel]
     res = {"gpu": torch.cuda.get_device_name(), "N": a.N, "mb": a.mb, "micro": a.micro, "train": {}, "rollout": {}}
+    if a.rollout_only:
+        res["real_rollout"] = real_rollout(a.B, dev)
+        print(json.dumps(res), flush=True)
+        if a.out:
+            with open(a.out, "w") as f:
+                json.dump(res, f, indent=1)
+        return
 
     configs = [("reference", dict(ref=True, len_sort=False)),
                ("fast", dict(ref=False, len_sort=False)),

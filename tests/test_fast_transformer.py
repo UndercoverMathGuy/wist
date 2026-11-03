@@ -51,3 +51,24 @@ def test_fast_gradients_match_reference():
         torch.nn.functional.cross_entropy(lg, act).backward()
         grads.append(torch.cat([p.grad.flatten() for p in m.actor.parameters() if p.grad is not None]))
     assert torch.allclose(grads[0], grads[1], atol=1e-5, rtol=1e-4), (grads[0] - grads[1]).abs().max()
+
+
+def test_graph_padding_path_matches_reference():
+    """The padded/bucketed inference path (used with CUDA graphs) must give identical logits.
+    On CPU we run it with the eager core standing in for the captured graph."""
+    import ladis.model as M
+    torch.manual_seed(2)
+    m = ActorCritic(arch="tf", d=32, layers=2, heads=2).eval()
+    torch.nn.init.normal_(m.actor.head[-1].weight, std=0.5)
+    obs, legal = _states(m, [0, 7, 33, 50], B=10)
+    with torch.no_grad():
+        ref = m.actor.forward_reference(obs).masked_fill(~legal, -1e9)
+        m.actor._core_graph = m.actor._core
+        old = M.torch.compiler.cudagraph_mark_step_begin
+        M.torch.compiler.cudagraph_mark_step_begin = lambda: None
+        try:
+            got = m.actor._forward_graphed(obs).masked_fill(~legal, -1e9)
+        finally:
+            M.torch.compiler.cudagraph_mark_step_begin = old
+            m.actor._core_graph = None
+    assert torch.allclose(ref, got, atol=1e-4, rtol=1e-4), (ref - got).abs().max()

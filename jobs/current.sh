@@ -1,5 +1,5 @@
-# job: PAUSE training -> GPU speed test (reference / fast / +len_sort / +compile) -> resume tf1 with the fastest
-#      configuration that ran cleanly (+ bench loop vs v1 every ~7.5 min, PIMC eval every ~40 min)
+# job: PAUSE training (graceful save) -> real-rollout CUDA-graph speed test -> resume tf1 (len_sort + compile,
+#      + cudagraph inference if >5% faster) (+ bench loop vs v1 every ~7.5 min, PIMC eval every ~40 min)
 pkill -f "ladis\." ; for p in $(pgrep -f "bash jobs/current.sh"); do [ "$p" != "$$" ] && kill "$p" 2>/dev/null; done
 for i in $(seq 1 30); do pgrep -f "ladis\.train" >/dev/null || break; sleep 5; done   # let a trainer save & exit
 pkill -9 -f "ladis\." ; sleep 2
@@ -8,19 +8,20 @@ rm -f runs/IDLE
 R=runs/tf1
 echo "=== paused $(date -Is) for speed test" >> $R/train.out
 date -Is > runs/PAUSED_FOR_SPEEDTEST
-python3 -m ladis.speed --out runs/speed.json > runs/speed.out 2>&1
+python3 -m ladis.speed --rollout_only --out runs/speed_cudagraph.json > runs/speed_cudagraph.out 2>&1
 rm -f runs/PAUSED_FOR_SPEEDTEST
 # choose flags from the speed test
 FLAGS=$(python3 - <<'PY'
 import json
+flags = "--len_sort 1 --compile 1"
 try:
-    t = json.load(open("runs/speed.json"))["train"]
+    r = json.load(open("runs/speed_cudagraph.json"))["real_rollout"]
+    a = r["compiled"]["secs_per_rollout"]; b = r["compiled+cudagraph"]["secs_per_rollout"]
+    if b < a / 1.05:
+        flags += " --cudagraph 1"
 except Exception:
-    print("--len_sort 0 --compile 0"); raise SystemExit
-sp = lambda k: t.get(k, {}).get("samples_per_s", 0)
-best_ls = sp("fast+len_sort") >= sp("fast")
-use_compile = sp("fast+len_sort+compile") > 1.05 * max(sp("fast+len_sort"), sp("fast"))
-print(f"--len_sort {int(best_ls or use_compile)} --compile {int(use_compile)}")
+    pass
+print(flags)
 PY
 )
 END=$(date -u -d "today 12:45" +%s); NOW=$(date -u +%s); HOURS=$(python3 -c "print(max(0.2, ($END-$NOW)/3600))")

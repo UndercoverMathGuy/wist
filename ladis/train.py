@@ -94,8 +94,9 @@ class League:
             os.makedirs(self.save_dir, exist_ok=True)
             torch.save(model.state_dict(), os.path.join(self.save_dir, f"snap_{tag:07d}.pt"))
         m = copy.deepcopy(model).eval()
-        if getattr(getattr(m, "actor", None), "_core_compiled", None) is not None:
-            m.actor._core_compiled = None  # deepcopy keeps the *learner's* compiled fn: drop it
+        for attr in ("_core_compiled", "_core_graph"):  # deepcopy keeps the *learner's* compiled fns: drop
+            if getattr(getattr(m, "actor", None), attr, None) is not None:
+                setattr(m.actor, attr, None)
         for p in m.parameters():
             p.requires_grad_(False)
         self.snaps.append(m)
@@ -261,6 +262,7 @@ def main():
     ap.add_argument("--heads", type=int, default=8)
     ap.add_argument("--len_sort", type=int, default=1, help="length-sorted token-budget micro-batches")
     ap.add_argument("--compile", type=int, default=0, help="torch.compile the transformer core")
+    ap.add_argument("--cudagraph", type=int, default=0, help="CUDA-graph the inference (rollout) path")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--exit_dir", default="", help="dir where search workers drop shards")
     ap.add_argument("--exit_coef", type=float, default=1.0)
@@ -281,6 +283,10 @@ def main():
                         layers=args.layers, heads=args.heads).to(dev)
     if args.compile and args.arch == "tf":
         model.actor.compile_core()
+    if args.cudagraph and args.arch == "tf" and dev.type == "cuda":
+        model.actor.enable_cudagraphs()
+    import logging  # silence harmless symbolic-shape warnings from the compiler
+    logging.getLogger("torch.utils._sympy.interp").setLevel(logging.ERROR)
     opt = torch.optim.Adam(model.parameters(), lr=args.lr, eps=1e-5, fused=dev.type == "cuda")
     league = League(save_dir=os.path.join(args.run, "snaps"))
     it0 = 0

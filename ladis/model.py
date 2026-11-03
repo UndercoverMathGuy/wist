@@ -88,6 +88,9 @@ class TransformerActor(nn.Module):
     def forward(self, obs):
         hand = obs["hand"]
         hcard = obs["hcard"]
+        if (getattr(self, "_core_graph", None) is not None and not torch.is_grad_enabled()
+                and hand.is_cuda and 0 < hand.shape[0] <= self.GRAPH_MAX_B):
+            return self._forward_graphed(obs)
         with torch.no_grad():
             nh = int((hand != PAD_CARD).sum(1).max().item()) if hand.numel() else 0
             nl = int((hcard != PAD_CARD).sum(1).max().item()) if hcard.numel() else 0
@@ -99,6 +102,40 @@ class TransformerActor(nn.Module):
         B = hand.shape[0]
         logits = torch.full((B, NC + 1), -1e9, device=score.device, dtype=score.dtype)
         logits.scatter_(1, hand[:, :H].long(), score)
+        return logits[:, :NC]
+
+    # ---------------------------------------------------------------- CUDA-graph inference path
+    # Inference only (rollouts / evals): inputs are padded to a small fixed set of shapes so that
+    # torch.compile(mode="reduce-overhead") can capture one CUDA graph per shape and replay it.
+    #   batch   -> multiple of 1024 (padding rows are all-pad tokens; their outputs are dropped)
+    #   hand    -> always 13 slots
+    #   history -> 8,16,24,32,40,48 or 52 tokens
+    GRAPH_MAX_B = 16384
+    GRAPH_L = (8, 16, 24, 32, 40, 48, 52)
+
+    def enable_cudagraphs(self):
+        self._core_graph = torch.compile(self._core, mode="reduce-overhead", dynamic=False)
+        return self
+
+    def _forward_graphed(self, obs):
+        hand, hcard = obs["hand"], obs["hcard"]
+        B = hand.shape[0]
+        nl = int((hcard != PAD_CARD).sum(1).max().item())
+        L = next(x for x in self.GRAPH_L if x >= max(nl, 1))
+        Bp = -(-B // 1024) * 1024
+
+        def pad(t, fill, width=None):
+            t = t if width is None else t[:, :width]
+            if Bp == B:
+                return t
+            return torch.cat([t, torch.full((Bp - B,) + t.shape[1:], fill, dtype=t.dtype, device=t.device)])
+        h = pad(hand.long(), PAD_CARD)
+        args = (h, pad(hcard.long(), PAD_CARD, L), pad(obs["hrel"].long(), NS, L), pad(obs["win"].long(), NS),
+                pad(obs["flat"], 0))
+        torch.compiler.cudagraph_mark_step_begin()
+        score = self._core_graph(*args)[:B].clone()  # clone: graph outputs are reused on next replay
+        logits = torch.full((B, NC + 1), -1e9, device=score.device, dtype=score.dtype)
+        logits.scatter_(1, hand.long(), score)
         return logits[:, :NC]
 
     def compile_core(self, **kw):
