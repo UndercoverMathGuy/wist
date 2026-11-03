@@ -1,4 +1,6 @@
 # job: tf1 retuned (from it-100 ckpt): 1 search worker, imitation weight 0.1, PIMC eval with small GPU batch
+# kill strays from previous jobs (nested subshells survive the runner's kill of direct children)
+pkill -f "ladis\." ; sleep 5; pkill -9 -f "ladis\." ; sleep 2
 pgrep -f "tools/authserve.py" >/dev/null || { setsid nohup python3 tools/authserve.py runs > http.log 2>&1 < /dev/null & }
 rm -f runs/IDLE
 R=runs/tf1; mkdir -p $R/x
