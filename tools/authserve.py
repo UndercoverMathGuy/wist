@@ -64,6 +64,13 @@ class H(http.server.SimpleHTTPRequestHandler):
                                             ("Set-Cookie", f"{COOKIE}=; Max-Age=0; Path=/; Secure; HttpOnly; SameSite=Strict")])
         if not self._authed():
             return self._send(404)
+        if self._path() in ("/dashboard", "/dashboard/"):  # served live from the repo checkout
+            try:
+                with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "dashboard.html"), "rb") as f:
+                    body = f.read()
+            except OSError:
+                return self._send(404)
+            return self._send(200, body, [("Content-Type", "text/html; charset=utf-8")])
         super().do_GET()
 
     def do_HEAD(self):

@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Ladis Training Bench</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<style>
+  :root { --bg:#fbfbfa; --fg:#1d1d1b; --muted:#6b6b66; --card:#ffffff; --line:#e6e5e0;
+          --pair:#2f6fdf; --adhoc:#d9822b; --zero:#9a9a94; --imit:#9b59b6; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#141413; --fg:#ecebe6; --muted:#9a9993; --card:#1d1d1b; --line:#2e2e2b;
+            --pair:#6aa0ff; --adhoc:#f0a35a; --zero:#6b6b66; --imit:#c39bd3; }
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg);
+         font: 15px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+  main { max-width: 980px; margin: 0 auto; padding: 20px 16px 40px; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  .sub { color: var(--muted); font-size: 13px; margin-bottom: 18px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 14px 14px 8px; margin-bottom: 16px; }
+  .card h2 { font-size: 15px; margin: 0 0 2px; }
+  .card p { margin: 0 0 8px; color: var(--muted); font-size: 13px; }
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin-bottom: 16px; }
+  .stat { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; }
+  .stat .k { color: var(--muted); font-size: 12px; }
+  .stat .v { font-size: 22px; font-variant-numeric: tabular-nums; }
+  .chartbox { position: relative; height: 320px; }
+  .err { color: #c0392b; font-size: 13px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Ladis — training benchmark</h1>
+  <div class="sub">Tricks/game vs fixed reference bots, same duplicate deals every point. Refreshes every 60 s. <span id="updated"></span> <span id="err" class="err"></span></div>
+
+  <div class="stats">
+    <div class="stat"><div class="k">Latest iteration</div><div class="v" id="s-iter">–</div></div>
+    <div class="stat"><div class="k">vs v1 · pair</div><div class="v" id="s-pair">–</div></div>
+    <div class="stat"><div class="k">vs v1 · one seat</div><div class="v" id="s-adhoc">–</div></div>
+    <div class="stat"><div class="k">Points</div><div class="v" id="s-n">–</div></div>
+  </div>
+
+  <div class="card">
+    <h2>vs v1 (MLP, ≈ PIMC strength)</h2>
+    <p>0 = level with v1. Pair = our two bots vs two v1s. One seat = our bot + v1 partner vs two v1s. Bands = ±1 s.e.</p>
+    <div class="chartbox"><canvas id="c1"></canvas></div>
+  </div>
+
+  <div class="card">
+    <h2>vs iteration-150 checkpoint (progress since the rewind)</h2>
+    <p>Head-to-head against the frozen iteration-150 model. Purple = abandoned imitation branch at iteration 200.</p>
+    <div class="chartbox"><canvas id="c2"></canvas></div>
+  </div>
+</main>
+<script>
+const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+const V1 = "v1/ckpt_paused.pt", RW = "tf1/ckpt_it150_rewind.pt";
+
+function series(rows, ref, kind) {
+  const pts = rows.filter(r => r[ref]).map(r => ({x: r.iter, y: r[ref][kind][0], e: r[ref][kind][1]}));
+  pts.sort((a, b) => a.x - b.x);
+  // several benches at the same iteration: keep the most precise one
+  const by = new Map();
+  for (const p of pts) { const q = by.get(p.x); if (!q || p.e < q.e) by.set(p.x, p); }
+  return [...by.values()].sort((a, b) => a.x - b.x);
+}
+
+function band(pts, color, label) {
+  return [
+    {label: label, data: pts.map(p => ({x: p.x, y: p.y})), borderColor: color, backgroundColor: color,
+     pointRadius: 3, tension: 0.2, borderWidth: 2},
+    {label: label + " +se", data: pts.map(p => ({x: p.x, y: p.y + p.e})), borderColor: "transparent",
+     backgroundColor: color + "33", pointRadius: 0, fill: "+1"},
+    {label: label + " -se", data: pts.map(p => ({x: p.x, y: p.y - p.e})), borderColor: "transparent",
+     pointRadius: 0, fill: false},
+  ];
+}
+
+function chart(id) {
+  return new Chart(document.getElementById(id), {
+    type: "line", data: {datasets: []},
+    options: {
+      animation: false, maintainAspectRatio: false, parsing: false,
+      interaction: {mode: "nearest", intersect: false},
+      scales: {
+        x: {type: "linear", title: {display: true, text: "training iteration", color: css("--muted")},
+            ticks: {color: css("--muted")}, grid: {color: css("--line")}},
+        y: {title: {display: true, text: "tricks / game", color: css("--muted")},
+            ticks: {color: css("--muted")}, grid: {color: css("--line")}}
+      },
+      plugins: {
+        legend: {labels: {color: css("--fg"), filter: i => !/[+-]se$/.test(i.text)}},
+        tooltip: {filter: i => !/[+-]se$/.test(i.dataset.label),
+                  callbacks: {label: c => `${c.dataset.label}: ${c.parsed.y >= 0 ? "+" : ""}${c.parsed.y.toFixed(3)}`}}
+      }
+    }
+  });
+}
+
+const c1 = chart("c1"), c2 = chart("c2");
+const fmt = v => (v >= 0 ? "+" : "") + v.toFixed(3);
+
+async function refresh() {
+  try {
+    const txt = await (await fetch("/tf1/bench.jsonl", {cache: "no-store", credentials: "same-origin"})).text();
+    const rows = txt.trim().split("\n").filter(Boolean).map(l => JSON.parse(l));
+    const main = rows.filter(r => !r.ckpt.includes("imitation"));
+    const imit = rows.filter(r => r.ckpt.includes("imitation"));
+    const zero = pts => pts.length ? [{x: Math.min(...pts.map(p => p.x)), y: 0}, {x: Math.max(...pts.map(p => p.x)), y: 0}] : [];
+
+    const p1 = series(main, V1, "pair"), a1 = series(main, V1, "adhoc");
+    c1.data.datasets = [...band(p1, css("--pair"), "pair"), ...band(a1, css("--adhoc"), "one seat"),
+      {label: "v1 level", data: zero(p1), borderColor: css("--zero"), borderDash: [6, 4], pointRadius: 0, borderWidth: 1}];
+    c1.update();
+
+    const p2 = series(main, RW, "pair"), a2 = series(main, RW, "adhoc");
+    const ip = series(imit, RW, "pair");
+    c2.data.datasets = [...band(p2, css("--pair"), "pair"), ...band(a2, css("--adhoc"), "one seat"),
+      {label: "imitation branch (pair)", data: ip.map(p => ({x: p.x, y: p.y})), borderColor: css("--imit"),
+       backgroundColor: css("--imit"), pointRadius: 6, pointStyle: "rectRot", showLine: false},
+      {label: "rewind level", data: zero(p2), borderColor: css("--zero"), borderDash: [6, 4], pointRadius: 0, borderWidth: 1}];
+    c2.update();
+
+    const last = p1[p1.length - 1], lasta = a1[a1.length - 1];
+    document.getElementById("s-iter").textContent = last ? last.x : "–";
+    document.getElementById("s-pair").textContent = last ? fmt(last.y) : "–";
+    document.getElementById("s-adhoc").textContent = lasta ? fmt(lasta.y) : "–";
+    document.getElementById("s-n").textContent = p1.length;
+    document.getElementById("updated").textContent = "Last refresh " + new Date().toLocaleTimeString() + ".";
+    document.getElementById("err").textContent = "";
+  } catch (e) {
+    document.getElementById("err").textContent = "Refresh failed: " + e;
+  }
+}
+refresh();
+setInterval(refresh, 60000);
+</script>
+</body>
+</html>
