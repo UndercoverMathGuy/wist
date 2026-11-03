@@ -1,0 +1,18 @@
+{
+ "samples": 305201,
+ "return_var": 10.9999,
+ "tf1_critic": {
+  "mse": 1.7735,
+  "smooth_l1": 0.5841,
+  "explained_var": 0.8393,
+  "bias": 0.0725
+ },
+ "v1_critic": {
+  "mse": 1.7386,
+  "smooth_l1": 0.5661,
+  "explained_var": 0.8419,
+  "bias": -0.007
+ },
+ "tf": "runs/tf1/latest.pt",
+ "iter": 450
+}

@@ -1,0 +1,18 @@
+{
+ "gpu": "NVIDIA GeForce RTX 5090",
+ "N": 65536,
+ "mb": 16384,
+ "micro": 4096,
+ "train": {},
+ "rollout": {},
+ "real_rollout": {
+  "compiled": {
+   "secs_per_rollout": 2.505,
+   "gpu_busy_frac": 0.935
+  },
+  "compiled+cudagraph": {
+   "secs_per_rollout": 3.087,
+   "gpu_busy_frac": 0.845
+  }
+ }
+}

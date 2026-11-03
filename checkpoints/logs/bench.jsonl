@@ -1,0 +1,27 @@
+{"ckpt": "runs/tf1/ckpt_it150_rewind.pt", "iter": 150, "deals": 16384, "time": "2026-11-03T08:42:43Z", "v1/ckpt_paused.pt": {"pair": [-0.2161, 0.0049], "adhoc": [-0.1284, 0.0048]}, "tf1/ckpt_it150_rewind.pt": {"pair": [0.0, 0.0], "adhoc": [0.0, 0.0]}}
+{"ckpt": "runs/tf1/ckpt_imitation_branch.pt", "iter": 200, "deals": 16384, "time": "2026-11-03T08:51:50Z", "v1/ckpt_paused.pt": {"pair": [-0.1887, 0.005], "adhoc": [-0.1039, 0.0048]}, "tf1/ckpt_it150_rewind.pt": {"pair": [0.0235, 0.0045], "adhoc": [0.0108, 0.0041]}}
+{"ckpt": "runs/tf1/latest.pt", "iter": 170, "deals": 4096, "time": "2026-11-03T09:00:59Z", "v1/ckpt_paused.pt": {"pair": [-0.1949, 0.01], "adhoc": [-0.111, 0.0097]}, "tf1/ckpt_it150_rewind.pt": {"pair": [0.0134, 0.0088], "adhoc": [-0.0045, 0.0082]}}
+{"ckpt": "runs/tf1/latest.pt", "iter": 200, "deals": 4096, "time": "2026-11-03T09:17:38Z", "v1/ckpt_paused.pt": {"pair": [-0.1864, 0.0102], "adhoc": [-0.0964, 0.0097]}, "tf1/ckpt_it150_rewind.pt": {"pair": [0.0658, 0.0096], "adhoc": [0.019, 0.0087]}}
+{"ckpt": "runs/tf1/ckpt_it200_ppo.pt", "iter": 200, "deals": 16384, "time": "2026-11-03T09:16:19Z", "v1/ckpt_paused.pt": {"pair": [-0.1717, 0.0051], "adhoc": [-0.0959, 0.0048]}, "tf1/ckpt_it150_rewind.pt": {"pair": [0.0672, 0.0048], "adhoc": [0.0265, 0.0044]}}
+{"ckpt": "runs/tf1/latest.pt", "iter": 210, "deals": 4096, "time": "2026-11-03T09:30:20Z", "v1/ckpt_paused.pt": {"pair": [-0.1573, 0.0101], "adhoc": [-0.0763, 0.0097]}, "tf1/ckpt_it150_rewind.pt": {"pair": [0.0737, 0.0093], "adhoc": [0.0304, 0.0087]}}
+{"ckpt": "runs/tf1/latest.pt", "iter": 240, "deals": 4096, "time": "2026-11-03T09:47:10Z", "v1/ckpt_paused.pt": {"pair": [-0.1448, 0.01], "adhoc": [-0.0782, 0.0094]}, "tf1/ckpt_it150_rewind.pt": {"pair": [0.0935, 0.0095], "adhoc": [0.0477, 0.0087]}}
+{"ckpt": "runs/tf1/latest.pt", "iter": 250, "deals": 4096, "time": "2026-11-03T09:53:40Z", "v1/ckpt_paused.pt": {"pair": [-0.129, 0.0099], "adhoc": [-0.049, 0.0094]}}
+{"ckpt": "runs/tf1/latest.pt", "iter": 260, "deals": 4096, "time": "2026-11-03T10:01:53Z", "v1/ckpt_paused.pt": {"pair": [-0.126, 0.0098], "adhoc": [-0.0648, 0.0094]}}
+{"ckpt": "runs/tf1/latest.pt", "iter": 270, "deals": 4096, "time": "2026-11-03T10:09:56Z", "v1/ckpt_paused.pt": {"pair": [-0.1072, 0.0098], "adhoc": [-0.0464, 0.0095]}}
+{"ckpt": "runs/tf1/latest.pt", "iter": 280, "deals": 4096, "time": "2026-11-03T10:17:40Z", "v1/ckpt_paused.pt": {"pair": [-0.1348, 0.0098], "adhoc": [-0.049, 0.0093]}}
+{"ckpt": "runs/tf1/latest.pt", "iter": 289, "deals": 4096, "time": "2026-11-03T10:21:52Z", "v1/ckpt_paused.pt": {"pair": [-0.1338, 0.0097], "adhoc": [-0.045, 0.0093]}}
+{"ckpt": "runs/tf1/latest.pt", "iter": 310, "deals": 4096, "time": "2026-11-03T10:29:37Z", "v1/ckpt_paused.pt": {"pair": [-0.1067, 0.0097], "adhoc": [-0.0581, 0.0096]}}
+{"ckpt": "runs/tf1/latest.pt", "iter": 323, "deals": 4096, "time": "2026-11-03T10:32:11Z", "v1/ckpt_paused.pt": {"pair": [-0.1271, 0.0097], "adhoc": [-0.0621, 0.0093]}}
+{"ckpt": "runs/tf1/latest.pt", "iter": 350, "deals": 4096, "time": "2026-11-03T10:39:30Z", "v1/ckpt_paused.pt": {"pair": [-0.1057, 0.0097], "adhoc": [-0.0337, 0.0095]}}
+{"ckpt": "runs/tf1/latest.pt", "iter": 350, "deals": 4096, "time": "2026-11-03T10:47:14Z", "v1/ckpt_paused.pt": {"pair": [-0.1057, 0.0097], "adhoc": [-0.0337, 0.0095]}}
+{"ckpt": "runs/tf1/latest.pt", "iter": 380, "deals": 4096, "time": "2026-11-03T11:02:41Z", "v1/ckpt_paused.pt": {"pair": [-0.0834, 0.0098], "adhoc": [-0.037, 0.0094]}}
+{"ckpt": "runs/tf1/latest.pt", "iter": 383, "deals": 4096, "time": "2026-11-03T11:04:59Z", "v1/ckpt_paused.pt": {"pair": [-0.0957, 0.0099], "adhoc": [-0.0454, 0.0096]}}
+{"ckpt": "runs/tf1/latest.pt", "iter": 393, "deals": 4096, "time": "2026-11-03T11:12:59Z", "v1/ckpt_paused.pt": {"pair": [-0.0679, 0.0101], "adhoc": [-0.0242, 0.0095]}}
+{"ckpt": "runs/tf1/latest.pt", "iter": 400, "deals": 4096, "time": "2026-11-03T11:20:42Z", "v1/ckpt_paused.pt": {"pair": [-0.0713, 0.01], "adhoc": [-0.0192, 0.0095]}}
+{"ckpt": "runs/tf1/latest.pt", "iter": 410, "deals": 4096, "time": "2026-11-03T11:28:38Z", "v1/ckpt_paused.pt": {"pair": [-0.0656, 0.01], "adhoc": [-0.0315, 0.0094]}}
+{"ckpt": "runs/tf1/latest.pt", "iter": 420, "deals": 4096, "time": "2026-11-03T11:36:31Z", "v1/ckpt_paused.pt": {"pair": [-0.0615, 0.0099], "adhoc": [-0.0261, 0.0093]}}
+{"ckpt": "runs/tf1/latest.pt", "iter": 430, "deals": 4096, "time": "2026-11-03T11:44:26Z", "v1/ckpt_paused.pt": {"pair": [-0.0563, 0.0098], "adhoc": [-0.0261, 0.0093]}}
+{"ckpt": "runs/tf1/latest.pt", "iter": 440, "deals": 4096, "time": "2026-11-03T11:52:18Z", "v1/ckpt_paused.pt": {"pair": [-0.0649, 0.0098], "adhoc": [-0.0216, 0.0093]}}
+{"ckpt": "runs/tf1/latest.pt", "iter": 450, "deals": 4096, "time": "2026-11-03T12:00:29Z", "v1/ckpt_paused.pt": {"pair": [-0.0543, 0.0097], "adhoc": [-0.0228, 0.0094]}, "tf1/ckpt_anchor_it450.pt": {"pair": [0.0, 0.0], "adhoc": [0.0, 0.0]}}
+{"ckpt": "runs/tf1/latest.pt", "iter": 460, "deals": 4096, "time": "2026-11-03T12:08:52Z", "v1/ckpt_paused.pt": {"pair": [-0.0562, 0.0097], "adhoc": [-0.0308, 0.0094]}, "tf1/ckpt_anchor_it450.pt": {"pair": [0.0123, 0.0081], "adhoc": [0.0063, 0.0071]}}
+{"ckpt": "runs/tf1/latest.pt", "iter": 470, "deals": 4096, "time": "2026-11-03T12:17:14Z", "v1/ckpt_paused.pt": {"pair": [-0.0389, 0.01], "adhoc": [-0.0212, 0.0095]}, "tf1/ckpt_anchor_it450.pt": {"pair": [0.0209, 0.0085], "adhoc": [0.0089, 0.0077]}}
